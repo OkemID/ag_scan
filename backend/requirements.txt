@@ -1,0 +1,14 @@
+# ─────────────────────────────────────────────────────────────
+# backend/requirements.txt
+#
+# Python packages needed to run the AG Scan backend.
+# Install everything with:
+#   pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────────
+
+fastapi==0.111.0          # The web framework — handles HTTP routing
+uvicorn[standard]==0.29.0 # The server that runs FastAPI
+pydantic==2.7.1           # Data validation (request/response models)
+opencv-python==4.9.0.80   # Computer vision — person detection + image processing
+numpy==1.26.4             # Fast array maths — used by OpenCV
+python-multipart==0.0.9   # Needed by FastAPI to handle file uploads

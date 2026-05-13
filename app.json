@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "AG Scan",
+    "slug": "ag-scan",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "platforms": ["ios", "android"],
+    "sdkVersion": "54.0.0",
+    "assetBundlePatterns": [
+      "assets/*"
+    ]
+  }
+}
