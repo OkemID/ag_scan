@@ -1,60 +1,50 @@
 // ─────────────────────────────────────────────────────────────
 // constants/theme.js
 //
-// This file holds all the colours, font sizes, and spacing
-// values used across the whole app.
-//
-// Why do this? So if you ever want to change a colour (say,
-// make the yellow a brighter shade), you only change it in
-// ONE place here instead of hunting through every file.
+// Design system for AG Scan — industrial safety aesthetic.
+// Dark base, high-contrast hi-vis yellow as the primary accent,
+// with clean semantic status colours.
 // ─────────────────────────────────────────────────────────────
 
 export const COLORS = {
-  // ── Brand yellows ──────────────────────────────────────────
-  yellow:      '#FFD600',   // Main hi-vis yellow (buttons, accents)
-  yellowDim:   '#B89900',   // Muted yellow for links / secondary text
+  // ── Brand / accent ─────────────────────────────────────────
+  yellow:      '#FFD600',   // Hi-vis yellow — primary CTA and accents
+  yellowDim:   '#A89000',   // Muted yellow for secondary elements
 
-  // ── Status colours ─────────────────────────────────────────
-  green:       '#00E676',   // COMPLIANT / success
-  red:         '#FF1744',   // NON-COMPLIANT / danger
-  orange:      '#FF6B00',   // NO PERSON / warning
-  blue:        '#40C4FF',   // Info / "On-Device" badge
+  // ── Status ─────────────────────────────────────────────────
+  green:       '#00E676',   // COMPLIANT
+  red:         '#FF1744',   // NON_COMPLIANT
+  orange:      '#FF6D00',   // NO_PERSON / warning
+  blue:        '#29B6F6',   // Info / YOLO badge
+  purple:      '#CE93D8',   // HSV fallback badge
 
-  // ── Background layers (darkest → lightest) ─────────────────
-  bg:          '#0A0C0E',   // Main screen background
-  surface:     '#111417',   // Cards, panels (slightly lighter)
-  surface2:    '#1A1E24',   // Progress bar tracks, inset areas
+  // ── Background stack ───────────────────────────────────────
+  bg:          '#080A0C',   // Root screen background
+  surface:     '#0F1215',   // Cards and panels
+  surface2:    '#181C21',   // Track fills, inset elements
+  surface3:    '#1E242B',   // Hover states, borders on dark
 
-  // ── Text colours ───────────────────────────────────────────
-  text:        '#F0EEE0',   // Primary readable text
-  muted:       '#7A8090',   // Labels, placeholders, timestamps
+  // ── Text ───────────────────────────────────────────────────
+  text:        '#EAE8D8',   // Primary readable text
+  textDim:     '#9AA0AC',   // Secondary text
+  muted:       '#5A6070',   // Labels, placeholders
 
   // ── Borders ────────────────────────────────────────────────
-  border:      'rgba(255, 214, 0, 0.15)',   // Subtle yellow border
-};
-
-export const FONTS = {
-  // Barlow Condensed = the bold display font for headings/labels
-  display: 'BarlowCondensed-Bold',
-  displayRegular: 'BarlowCondensed-Regular',
-
-  // Barlow = the normal readable font for body text
-  body: 'Barlow-Regular',
-  bodyMedium: 'Barlow-Medium',
+  border:      'rgba(255, 214, 0, 0.12)',
+  borderDim:   'rgba(255, 255, 255, 0.06)',
 };
 
 export const SIZES = {
-  // Spacing scale — use multiples of 4 for consistency
-  xs:  4,
-  sm:  8,
-  md:  12,
-  lg:  16,
-  xl:  20,
-  xxl: 28,
+  xs:   4,
+  sm:   8,
+  md:   12,
+  lg:   16,
+  xl:   20,
+  xxl:  28,
+  xxxl: 40,
 
-  // Border radius — how rounded corners are
-  radiusSm: 6,
-  radiusMd: 10,
-  radiusLg: 14,
-  radiusFull: 999, // Fully round (pill shape)
+  radiusSm:   6,
+  radiusMd:   10,
+  radiusLg:   16,
+  radiusFull: 999,
 };

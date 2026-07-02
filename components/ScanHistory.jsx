@@ -1,18 +1,20 @@
 // ─────────────────────────────────────────────────────────────
 // components/ScanHistory.jsx
 //
-// Shows the last 5 scan verdicts in a scrollable list.
-// Each row shows a coloured dot, the verdict, and the time.
+// Recent scans list. Changes from v1:
+//   - Each row now shows a YOLO/HSV method badge.
+//   - People count shown alongside coverage.
+//   - Vest type shown when available.
 //
 // Props:
-//   history  — array of { verdict, time, coverage } objects
+//   history — array of { verdict, time, coverage, vestType,
+//                        detectionMethod, people }
 // ─────────────────────────────────────────────────────────────
 
 import React from 'react';
 import { View, Text, FlatList, StyleSheet } from 'react-native';
 import { COLORS, SIZES } from '../constants/theme';
 
-// Colour for each verdict's dot indicator
 const DOT_COLORS = {
   COMPLIANT:     COLORS.green,
   NON_COMPLIANT: COLORS.red,
@@ -20,119 +22,85 @@ const DOT_COLORS = {
   UNKNOWN:       COLORS.muted,
 };
 
-// ── HistoryItem ───────────────────────────────────────────────
-// One row in the history list. A pure presentational component
-// — it just displays whatever data it receives, no logic here.
 function HistoryItem({ item }) {
+  const dotColor = DOT_COLORS[item.verdict] ?? COLORS.muted;
 
-  const dotColor = DOT_COLORS[item.verdict] || COLORS.muted;
-
-  // Format timestamp as e.g. "14:32:09"
   const timeLabel = item.time instanceof Date
     ? item.time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : '—';
 
+  const isYolo   = item.detectionMethod?.startsWith('yolo');
+  const methColor = isYolo ? COLORS.blue : COLORS.purple;
+  const methLabel = isYolo ? 'Y' : 'H';
+
   return (
     <View style={styles.item}>
-      {/* Coloured dot on the left */}
+      {/* Status dot */}
       <View style={[styles.dot, { backgroundColor: dotColor }]} />
 
-      {/* Verdict text */}
-      <Text style={styles.verdict}>
-        {item.verdict.replace(/_/g, ' ')}
-      </Text>
+      {/* Verdict */}
+      <Text style={styles.verdict}>{item.verdict.replace(/_/g, ' ')}</Text>
 
-      {/* Coverage percentage if available */}
-      {item.coverage != null && (
-        <Text style={styles.coverage}>{item.coverage.toFixed(1)}%</Text>
+      {/* Coverage */}
+      {item.coverage != null && item.coverage > 0 && (
+        <Text style={styles.coverage}>{item.coverage.toFixed(0)}%</Text>
       )}
 
-      {/* Timestamp pushed to the right */}
+      {/* People count */}
+      {item.people != null && (
+        <Text style={styles.people}>{item.people}👤</Text>
+      )}
+
+      {/* Detection method mini-badge */}
+      {item.detectionMethod && item.detectionMethod !== 'error' && (
+        <View style={[styles.methBadge, { borderColor: methColor + '50', backgroundColor: methColor + '15' }]}>
+          <Text style={[styles.methText, { color: methColor }]}>{methLabel}</Text>
+        </View>
+      )}
+
       <Text style={styles.time}>{timeLabel}</Text>
     </View>
   );
 }
 
-// ── ScanHistory (main export) ─────────────────────────────────
 export default function ScanHistory({ history }) {
-
-  // Don't show the section at all if there are no scans yet
-  if (!history || history.length === 0) return null;
+  if (!history?.length) return null;
 
   return (
     <View style={styles.container}>
-
-      {/* Section title */}
       <Text style={styles.sectionTitle}>Recent Scans</Text>
-
-      {/*
-        FlatList is the React Native equivalent of a scrollable list.
-        It's more efficient than mapping over an array because it
-        only renders the items currently visible on screen.
-
-        data         — the array to display
-        keyExtractor — a unique key for each item (React needs this)
-        renderItem   — a function that returns a component for each item
-        scrollEnabled={false} — we don't need to scroll this short list
-      */}
       <FlatList
         data={history}
-        keyExtractor={(_, index) => index.toString()}
+        keyExtractor={(_, i) => i.toString()}
         renderItem={({ item }) => <HistoryItem item={item} />}
-        ItemSeparatorComponent={() => <View style={styles.separator} />}
+        ItemSeparatorComponent={() => <View style={styles.sep} />}
         scrollEnabled={false}
       />
-
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    gap: SIZES.sm,
-  },
-  sectionTitle: {
-    fontSize:      10,
-    fontWeight:    '600',
-    color:         COLORS.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 3,
-  },
+  container:    { gap: SIZES.sm },
+  sectionTitle: { fontSize: 10, fontWeight: '600', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: 3 },
 
-  // ── History item ──────────────────────────────────────────
   item: {
-    flexDirection:   'row',
-    alignItems:      'center',
-    gap:             SIZES.sm,
+    flexDirection:     'row',
+    alignItems:        'center',
+    gap:               SIZES.sm,
     paddingHorizontal: SIZES.md,
     paddingVertical:   SIZES.sm,
-    backgroundColor: COLORS.surface,
-    borderRadius:    SIZES.radiusSm,
-    borderWidth:     1,
-    borderColor:     COLORS.border,
+    backgroundColor:   COLORS.surface,
+    borderRadius:      SIZES.radiusSm,
+    borderWidth:       1,
+    borderColor:       COLORS.borderDim,
   },
-  dot: {
-    width:        7,
-    height:       7,
-    borderRadius: 3.5,    // Circle
-    flexShrink:   0,      // Don't let it shrink
-  },
-  verdict: {
-    flex:       1,        // Takes up remaining space, pushing time to the right
-    fontSize:   13,
-    color:      COLORS.text,
-    fontWeight: '500',
-  },
-  coverage: {
-    fontSize: 12,
-    color:    COLORS.yellow,
-    fontWeight: '600',
-  },
-  time: {
-    fontSize: 11,
-    color:    COLORS.muted,
-  },
-  separator: {
-    height: 5,            // Small gap between items
-  },
+  dot:      { width: 7, height: 7, borderRadius: 3.5, flexShrink: 0 },
+  verdict:  { flex: 1, fontSize: 13, color: COLORS.text, fontWeight: '500' },
+  coverage: { fontSize: 12, color: COLORS.yellow, fontWeight: '600' },
+  people:   { fontSize: 11, color: COLORS.textDim },
+  methBadge: { paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, borderWidth: 1 },
+  methText:  { fontSize: 9, fontWeight: '700' },
+  time:     { fontSize: 11, color: COLORS.muted },
+  sep:      { height: 4 },
 });

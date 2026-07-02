@@ -1,13 +1,20 @@
-# //.gitignore
-# dependencies
 node_modules/
-
-# Expo
 .expo/
 dist/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
 web-build/
-expo-env.d.ts
 
-# python
-venv/
+# Backend
+backend/venv/
+backend/__pycache__/
+backend/*.pyc
+__pycache__/
 
+# OS
+.DS_Store
+*.log

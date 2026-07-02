@@ -1,156 +1,130 @@
 // ─────────────────────────────────────────────────────────────
 // components/ResultCard.jsx
 //
-// Displays the result of the most recent scan in a card below
-// the camera. Shows:
-//   - Verdict pill (COMPLIANT / NON-COMPLIANT / etc.)
-//   - Human-readable reason from the backend
-//   - Confidence and hi-vis coverage metrics
-//   - Timestamp of the scan
+// Scan result card. Changes from v1:
+//   - Timestamp is now passed in as a prop (set when the scan
+//     completes, not at render time — fixes the stale clock bug).
+//   - vest_type is now shown explicitly in a dedicated row.
+//   - detection_method badge shows whether YOLO or HSV produced
+//     the result.
+//   - People count gets its own larger display.
 //
 // Props:
-//   result  — the scan result object from the backend, or null
+//   result    — scan result object or null
+//   scanTime  — Date object of when the scan completed (or null)
 // ─────────────────────────────────────────────────────────────
 
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { COLORS, SIZES } from '../constants/theme';
 
-// ── Configuration for each verdict type ──────────────────────
-// Keeps all the colour/label logic in one tidy lookup table
-// instead of scattered if/else statements.
 const VERDICT_CONFIG = {
   COMPLIANT: {
-    label:      'COMPLIANT',
-    textColor:  COLORS.green,
-    bgColor:    'rgba(0, 230, 118, 0.12)',
-    borderColor:'rgba(0, 230, 118, 0.25)',
+    label:       'COMPLIANT',
+    textColor:   COLORS.green,
+    bgColor:     'rgba(0, 230, 118, 0.10)',
+    borderColor: 'rgba(0, 230, 118, 0.22)',
   },
   NON_COMPLIANT: {
-    label:      'NON-COMPLIANT',
-    textColor:  COLORS.red,
-    bgColor:    'rgba(255, 23, 68, 0.10)',
-    borderColor:'rgba(255, 23, 68, 0.22)',
+    label:       'NON-COMPLIANT',
+    textColor:   COLORS.red,
+    bgColor:     'rgba(255, 23, 68, 0.10)',
+    borderColor: 'rgba(255, 23, 68, 0.22)',
   },
   NO_PERSON: {
-    label:      'NO PERSON',
-    textColor:  COLORS.orange,
-    bgColor:    'rgba(255, 107, 0, 0.10)',
-    borderColor:'rgba(255, 107, 0, 0.22)',
+    label:       'NO PERSON',
+    textColor:   COLORS.orange,
+    bgColor:     'rgba(255, 109, 0, 0.10)',
+    borderColor: 'rgba(255, 109, 0, 0.22)',
   },
   UNKNOWN: {
-    label:      'UNKNOWN',
-    textColor:  COLORS.muted,
-    bgColor:    'rgba(122, 128, 144, 0.10)',
-    borderColor:'rgba(122, 128, 144, 0.20)',
+    label:       'UNKNOWN',
+    textColor:   COLORS.muted,
+    bgColor:     'rgba(90, 96, 112, 0.10)',
+    borderColor: 'rgba(90, 96, 112, 0.20)',
   },
 };
 
-// ── ConfidenceBar ─────────────────────────────────────────────
-// A small horizontal progress bar showing 0–100%.
-// Used for both Confidence and Hi-Vis Coverage metrics.
-function ConfidenceBar({ label, value, color }) {
-  // Clamp the value between 0 and 100 just in case
-  const clampedValue = Math.min(100, Math.max(0, value || 0));
-
+// ── MetricBar ─────────────────────────────────────────────────
+function MetricBar({ label, value, color }) {
+  const clamped = Math.min(100, Math.max(0, value || 0));
   return (
-    <View style={barStyles.container}>
-      <Text style={barStyles.label}>{label}</Text>
-      {/* Grey track */}
-      <View style={barStyles.track}>
-        {/* Coloured fill, width is a percentage string e.g. "72%" */}
-        <View
-          style={[
-            barStyles.fill,
-            { width: `${clampedValue}%`, backgroundColor: color },
-          ]}
-        />
+    <View style={bar.row}>
+      <Text style={bar.label}>{label}</Text>
+      <View style={bar.track}>
+        <View style={[bar.fill, { width: `${clamped}%`, backgroundColor: color }]} />
       </View>
-      <Text style={[barStyles.value, { color }]}>{clampedValue.toFixed(1)}%</Text>
+      <Text style={[bar.value, { color }]}>{clamped.toFixed(1)}%</Text>
     </View>
   );
 }
 
-const barStyles = StyleSheet.create({
-  container: {
-    flexDirection: 'row',
-    alignItems:    'center',
-    gap:           SIZES.sm,
-    marginTop:     SIZES.sm,
-  },
-  label: {
-    fontSize:      10,
-    fontWeight:    '600',
-    color:         COLORS.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-    width:         75,          // Fixed width so bars align nicely
-  },
-  track: {
-    flex:            1,
-    height:          4,
-    backgroundColor: COLORS.surface2,
-    borderRadius:    2,
-    overflow:        'hidden',
-  },
-  fill: {
-    height:       '100%',
-    borderRadius: 2,
-  },
-  value: {
-    fontSize:   12,
-    fontWeight: '600',
-    minWidth:   36,
-    textAlign:  'right',
-  },
+const bar = StyleSheet.create({
+  row:   { flexDirection: 'row', alignItems: 'center', gap: SIZES.sm, marginTop: SIZES.sm },
+  label: { fontSize: 10, fontWeight: '600', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: 1.5, width: 78 },
+  track: { flex: 1, height: 4, backgroundColor: COLORS.surface2, borderRadius: 2, overflow: 'hidden' },
+  fill:  { height: '100%', borderRadius: 2 },
+  value: { fontSize: 12, fontWeight: '600', minWidth: 38, textAlign: 'right' },
 });
 
-// ── ResultCard (main export) ───────────────────────────────────
-export default function ResultCard({ result }) {
 
-  // Don't render anything if there's no result yet
+// ── DetectionBadge ────────────────────────────────────────────
+function DetectionBadge({ method }) {
+  if (!method || method === 'error') return null;
+  const isYolo = method.startsWith('yolo');
+  const color  = isYolo ? COLORS.blue : COLORS.purple;
+  const label  = isYolo ? 'YOLO' : 'HSV';
+  return (
+    <View style={[badge.pill, { borderColor: color + '55', backgroundColor: color + '18' }]}>
+      <Text style={[badge.text, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+const badge = StyleSheet.create({
+  pill: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: SIZES.radiusSm, borderWidth: 1 },
+  text: { fontSize: 9, fontWeight: '700', letterSpacing: 1.5 },
+});
+
+
+// ── ResultCard ────────────────────────────────────────────────
+export default function ResultCard({ result, scanTime }) {
   if (!result) return null;
 
-  // Look up the display config for this verdict
-  const config = VERDICT_CONFIG[result.verdict] || VERDICT_CONFIG.UNKNOWN;
+  const config = VERDICT_CONFIG[result.verdict] ?? VERDICT_CONFIG.UNKNOWN;
 
-  // Choose a bar colour based on confidence level:
-  // high = green, medium = yellow, low = orange
-  const confidenceColor = (result.confidence || 0) >= 75
-    ? COLORS.green
-    : (result.confidence || 0) >= 45
-      ? COLORS.yellow
-      : COLORS.orange;
+  const confidenceColor = (result.confidence || 0) >= 75 ? COLORS.green
+                        : (result.confidence || 0) >= 45 ? COLORS.yellow
+                        : COLORS.orange;
 
-  // Format the current time as HH:MM:SS
-  const timeLabel = new Date().toLocaleTimeString([], {
-    hour:   '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  // Timestamp: use passed-in scanTime, not new Date() at render time
+  const timeLabel = scanTime instanceof Date
+    ? scanTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : '—';
+
+  // Friendly vest type display
+  const vestLabel = result.vest_type && result.vest_type !== 'none'
+    ? result.vest_type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+    : '—';
 
   return (
     <View style={styles.card}>
 
-      {/* ── Top row: verdict pill + timestamp ──────────── */}
+      {/* ── Header row ────────────────────────────────── */}
       <View style={styles.headerRow}>
-
-        {/* Coloured pill showing the verdict word */}
         <View style={[styles.pill, { backgroundColor: config.bgColor, borderColor: config.borderColor }]}>
-          <Text style={[styles.pillText, { color: config.textColor }]}>
-            {config.label}
-          </Text>
+          <Text style={[styles.pillText, { color: config.textColor }]}>{config.label}</Text>
         </View>
-
-        {/* Timestamp pushed to the right */}
-        <Text style={styles.time}>{timeLabel}</Text>
-
+        <View style={styles.headerRight}>
+          <DetectionBadge method={result.detection_method} />
+          <Text style={styles.time}>{timeLabel}</Text>
+        </View>
       </View>
 
-      {/* ── Reason text ─────────────────────────────────── */}
+      {/* ── Reason ────────────────────────────────────── */}
       <Text style={styles.reason}>{result.reason || '—'}</Text>
 
-      {/* ── Quick stats row ──────────────────────────────── */}
+      {/* ── Stats grid ────────────────────────────────── */}
       <View style={styles.statsRow}>
         <View style={styles.statBox}>
           <Text style={styles.statLabel}>People</Text>
@@ -165,19 +139,16 @@ export default function ResultCard({ result }) {
             {result.coverage != null ? result.coverage.toFixed(1) + '%' : '—'}
           </Text>
         </View>
+        <View style={styles.statDivider} />
+        <View style={styles.statBox}>
+          <Text style={styles.statLabel}>Vest Type</Text>
+          <Text style={[styles.statValue, { color: COLORS.textDim, fontSize: 11 }]}>{vestLabel}</Text>
+        </View>
       </View>
 
-      {/* ── Progress bars ────────────────────────────────── */}
-      <ConfidenceBar
-        label="Confidence"
-        value={result.confidence}
-        color={confidenceColor}
-      />
-      <ConfidenceBar
-        label="Hi-Vis Cover"
-        value={result.coverage}
-        color={COLORS.yellow}
-      />
+      {/* ── Metric bars ───────────────────────────────── */}
+      <MetricBar label="Confidence" value={result.confidence} color={confidenceColor} />
+      <MetricBar label="Hi-Vis"     value={result.coverage}   color={COLORS.yellow}   />
 
     </View>
   );
@@ -192,7 +163,6 @@ const styles = StyleSheet.create({
     padding:         SIZES.md,
   },
 
-  // ── Header ────────────────────────────────────────────────
   headerRow: {
     flexDirection:  'row',
     alignItems:     'center',
@@ -205,26 +175,17 @@ const styles = StyleSheet.create({
     borderRadius:      SIZES.radiusSm,
     borderWidth:       1,
   },
-  pillText: {
-    fontSize:      11,
-    fontWeight:    '700',
-    letterSpacing: 1.5,
-    textTransform: 'uppercase',
-  },
-  time: {
-    fontSize: 12,
-    color:    COLORS.muted,
-  },
+  pillText: { fontSize: 11, fontWeight: '700', letterSpacing: 1.5, textTransform: 'uppercase' },
+  headerRight: { flexDirection: 'row', alignItems: 'center', gap: SIZES.sm },
+  time:        { fontSize: 11, color: COLORS.muted },
 
-  // ── Reason ────────────────────────────────────────────────
   reason: {
-    fontSize:    13,
-    color:       'rgba(240, 238, 224, 0.68)',
-    lineHeight:  19,
+    fontSize:     13,
+    color:        COLORS.textDim,
+    lineHeight:   19,
     marginBottom: SIZES.sm,
   },
 
-  // ── Stats ─────────────────────────────────────────────────
   statsRow: {
     flexDirection:   'row',
     backgroundColor: COLORS.surface2,
@@ -232,27 +193,8 @@ const styles = StyleSheet.create({
     overflow:        'hidden',
     marginBottom:    SIZES.xs,
   },
-  statBox: {
-    flex:           1,
-    padding:        SIZES.sm,
-    alignItems:     'center',
-  },
-  statDivider: {
-    width:           1,
-    backgroundColor: COLORS.border,
-  },
-  statLabel: {
-    fontSize:      9,
-    fontWeight:    '600',
-    color:         COLORS.muted,
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-    marginBottom:  3,
-  },
-  statValue: {
-    fontSize:   18,
-    fontWeight: '700',
-  },
+  statBox:     { flex: 1, padding: SIZES.sm, alignItems: 'center' },
+  statDivider: { width: 1, backgroundColor: COLORS.borderDim },
+  statLabel:   { fontSize: 9, fontWeight: '600', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: 1.5, marginBottom: 3 },
+  statValue:   { fontSize: 18, fontWeight: '700' },
 });
-// Note: vest_type is now available in result.vest_type
-// The ResultCard already shows reason which includes vest type in the text from the backend

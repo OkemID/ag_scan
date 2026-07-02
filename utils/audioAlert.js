@@ -1,92 +1,56 @@
 // ─────────────────────────────────────────────────────────────
 // utils/audioAlert.js
 //
-// Migrated from expo-av → expo-audio (required for SDK 54+).
+// expo-audio wrapper (SDK 54+).
+// Keeps two persistent players pre-loaded so there's no
+// latency when a scan result arrives.
 //
-// expo-av was deprecated and removed in SDK 54.
-// expo-audio is the direct replacement with a cleaner API.
-//
-// Key API differences from expo-av:
-//   OLD (expo-av):  Audio.Sound.createAsync(source)
-//   NEW (expo-audio): createAudioPlayer(source)
-//
-//   OLD: sound.setPositionAsync(milliseconds)
-//   NEW: player.seekTo(seconds)  ← note: SECONDS not milliseconds
-//
-//   OLD: sound.setOnPlaybackStatusUpdate(cb)
-//   NEW: player.addListener('playbackStatusUpdate', cb)
-//        returns a subscription object with .remove()
-//
-//   OLD: Audio.setAudioModeAsync({ playThroughEarpieceAndroid: false })
-//   NEW: setAudioModeAsync({ shouldDuckAndroid: false })
-//        expo-audio routes to loudspeaker by default on Android
-//
-// Install: npx expo install expo-audio
+// API summary (expo-audio vs old expo-av):
+//   createAudioPlayer(source)          — replaces Sound.createAsync
+//   player.seekTo(seconds)             — replaces setPositionAsync(ms)
+//   player.addListener('playbackStatusUpdate', cb)
+//   setAudioModeAsync({ ... })
 // ─────────────────────────────────────────────────────────────
 
-import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
+import { createAudioPlayer, setAudioModeAsync } from "expo-audio";
 
-// The two persistent player instances — created once, reused forever
-let alertPlayer   = null;   // "Put on a life jacket to access this vessel"
-let welcomePlayer = null;   // "Welcome aboard"
+let alertPlayer = null; // NON_COMPLIANT audio
+let welcomePlayer = null; // COMPLIANT audio
 let isInitialised = false;
 
-// ─────────────────────────────────────────────────────────────
-// initAudio()
-// Call once from App.jsx on startup to pre-load both sounds.
-// ─────────────────────────────────────────────────────────────
+// ── initAudio() ───────────────────────────────────────────────
+// Call once from App.jsx at startup.
 export async function initAudio() {
   if (isInitialised) return;
-
   try {
-    console.log('[audioAlert] Initialising sounds...');
-
-    // Configure audio session:
-    // playsInSilentMode: true  → plays on iOS even when ring switch is off
-    // shouldDuckAndroid: false → don't lower other app volumes
-    // expo-audio routes to loudspeaker by default on Android
     await setAudioModeAsync({
-      playsInSilentMode: true,
-      shouldDuckAndroid: false,
+      playsInSilentMode: true, // Play on iOS even with ring switch off
+      shouldDuckAndroid: false, // Don't lower other app volumes
     });
-
-    // createAudioPlayer loads the file and keeps it ready to play.
-    // Unlike expo-av's Sound.createAsync, this is synchronous-style
-    // and doesn't need to be awaited — the player buffers in the background.
-    alertPlayer   = createAudioPlayer(require('../assets/alert.mp3'));
-    welcomePlayer = createAudioPlayer(require('../assets/welcome.mp3'));
-
+    alertPlayer = createAudioPlayer(require("../assets/alert.mp3"), {}, {});
+    welcomePlayer = createAudioPlayer(require("../assets/welcome.mp3"), {}, {});
     isInitialised = true;
-    console.log('[audioAlert] Both sounds loaded and ready');
-
-  } catch (error) {
-    console.error('[audioAlert] Init failed:', error.message);
+    console.log("[audio] Ready");
+  } catch (e) {
+    console.error("[audio] Init failed:", e.message);
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// _play(player, label)
-// Rewinds the player to 0 seconds and plays it.
-// Returns a Promise that resolves when playback finishes.
-//
-// IMPORTANT: listener is attached BEFORE seekTo/play so we
-// never miss the didJustFinish event on short sounds.
-// ─────────────────────────────────────────────────────────────
+// ── _play(player, label) ──────────────────────────────────────
+// Rewinds and plays. Returns a Promise that resolves when done.
+// A 10-second safety timeout prevents isSpeaking getting stuck.
 function _play(player, label) {
   return new Promise((resolve) => {
     if (!player) {
-      console.warn('[audioAlert] Player not ready for:', label);
       resolve();
       return;
     }
 
-    // Safety net — if didJustFinish never fires (e.g. audio focus lost),
-    // this resolves after 10 seconds so isSpeaking can't stay stuck
     const safetyTimer = setTimeout(() => {
-      console.warn('[audioAlert] Safety timeout fired for:', label);
+      console.warn("[audio] Safety timeout:", label);
       subscription.remove();
       resolve();
-    }, 10000);
+    }, 10_000);
 
     const done = () => {
       clearTimeout(safetyTimer);
@@ -94,43 +58,30 @@ function _play(player, label) {
       resolve();
     };
 
-    // Register listener BEFORE playing — never miss didJustFinish
-    const subscription = player.addListener('playbackStatusUpdate', (status) => {
-      if (status.didJustFinish) {
-        done();
-      }
+    // Attach listener BEFORE play so we never miss didJustFinish
+    const subscription = player.addListener("playbackStatusUpdate", (s) => {
+      if (s.didJustFinish) done();
     });
 
     try {
-      // seekTo takes SECONDS in expo-audio (not milliseconds like expo-av)
       player.seekTo(0);
       player.play();
-      console.log('[audioAlert] Playing:', label);
-    } catch (error) {
-      console.error('[audioAlert] Play failed for', label, ':', error.message);
+    } catch (e) {
+      console.error("[audio] Play failed:", label, e.message);
       done();
     }
   });
 }
 
-// ─────────────────────────────────────────────────────────────
-// Public API
-// ─────────────────────────────────────────────────────────────
-
-export function playCompliantAlert() {
-  return _play(welcomePlayer, 'Welcome aboard');
-}
-
-export function playNonCompliantAlert() {
-  return _play(alertPlayer, 'Put on a life jacket');
-}
+export const playCompliantAlert = () => _play(welcomePlayer, "Welcome aboard");
+export const playNonCompliantAlert = () =>
+  _play(alertPlayer, "Put on a life jacket");
 
 export function stopAlert() {
   try {
-    // pause() stops playback without destroying the player
-    if (alertPlayer)   alertPlayer.pause();
-    if (welcomePlayer) welcomePlayer.pause();
-  } catch (error) {
-    console.warn('[audioAlert] Stop failed:', error.message);
+    alertPlayer?.pause();
+    welcomePlayer?.pause();
+  } catch (e) {
+    console.warn("[audio] Stop failed:", e.message);
   }
 }

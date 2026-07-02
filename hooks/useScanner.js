@@ -1,136 +1,130 @@
 // ─────────────────────────────────────────────────────────────
 // hooks/useScanner.js
 //
-// KEY CHANGE in this version:
-//   After each scan result, the loop now AWAITS the voice alert
-//   before starting the pause timer. This means:
+// All scanning state and logic. Changes from v1:
 //
-//     1. Frame captured & analysed
-//     2. Result shown on screen
-//     3. Voice plays fully ("Welcome aboard" OR "Put on a life jacket")
-//     4. 2.5 second pause
-//     5. Next scan begins
+//   - sensitivity state (default 10%) lives here and is passed
+//     to scanImage() so the UI slider now actually does something.
 //
-//   Previously step 3 and 4 happened at the same time, so the
-//   next scan could fire while the voice was still talking.
+//   - pingServer() now returns a health payload, not just a bool.
+//     serverOnline remains a bool; healthInfo carries the detail
+//     (including yolo_model status) for the Header to display.
+//
+//   - history entries now include detection_method and
+//     vestType so ScanHistory can show richer rows.
+//
+//   - runOneScan clears stale boxes immediately before capture
+//     (carried forward from v1 — this behaviour is correct).
 // ─────────────────────────────────────────────────────────────
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useCameraPermissions } from 'expo-camera';
-import { pingServer, scanImage } from '../utils/api';
-import { playCompliantAlert, playNonCompliantAlert, stopAlert } from '../utils/audioAlert';
+import { useCameraPermissions }                       from 'expo-camera';
+import { pingServer, scanImage }                      from '../utils/api';
+import {
+  playCompliantAlert,
+  playNonCompliantAlert,
+  stopAlert,
+}                                                     from '../utils/audioAlert';
 
-// Gap between scans AFTER the voice finishes (milliseconds)
-const POST_AUDIO_PAUSE_MS = 1500;
-
-// Maximum scans to keep in history
-const MAX_HISTORY = 10;
+const POST_AUDIO_PAUSE_MS = 1_500;
+const MAX_HISTORY         = 10;
+const HEALTH_INTERVAL_MS  = 10_000;
 
 export function useScanner() {
-
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef      = useRef(null);
-  const liveScanActive = useRef(false);  // Loop keep-going flag
+  const liveScanActive = useRef(false);
 
   const [isLiveScanning, setIsLiveScanning] = useState(false);
   const [isScanning,     setIsScanning]     = useState(false);
-  const [isSpeaking,     setIsSpeaking]     = useState(false);  // Voice playing?
+  const [isSpeaking,     setIsSpeaking]     = useState(false);
   const [lastResult,     setLastResult]     = useState(null);
   const [serverOnline,   setServerOnline]   = useState(false);
+  const [healthInfo,     setHealthInfo]     = useState(null);   // full /health payload
   const [history,        setHistory]        = useState([]);
   const [facing,         setFacing]         = useState('back');
+  const [sensitivity,    setSensitivity]    = useState(10);     // 1–50, default 10%
 
-  // Server health check every 10 seconds
+  // ── Server health poll ───────────────────────────────────
   useEffect(() => {
     async function checkServer() {
-      const online = await pingServer();
-      setServerOnline(online);
+      const payload = await pingServer();
+      setServerOnline(!!payload);
+      setHealthInfo(payload);
     }
     checkServer();
-    const interval = setInterval(checkServer, 10000);
-    return () => clearInterval(interval);
+    const id = setInterval(checkServer, HEALTH_INTERVAL_MS);
+    return () => clearInterval(id);
   }, []);
 
   const flip = useCallback(() => {
-    setFacing(current => current === 'back' ? 'front' : 'back');
+    setFacing(f => f === 'back' ? 'front' : 'back');
   }, []);
 
   const addToHistory = useCallback((result) => {
     setHistory(prev => [
       {
-        verdict:  result.verdict,
-        time:     new Date(),
-        coverage: result.coverage,
-        vestType: result.vest_type,
+        verdict:         result.verdict,
+        time:            new Date(),
+        coverage:        result.coverage,
+        vestType:        result.vest_type,
+        detectionMethod: result.detection_method,
+        people:          result.people,
       },
-      ...prev
+      ...prev,
     ].slice(0, MAX_HISTORY));
   }, []);
 
-  // ── runOneScan() ──────────────────────────────────────────
-  // Captures one frame, analyses it, plays the right voice,
-  // then returns. The loop awaits this whole sequence before
-  // starting the next scan.
+  // ── runOneScan ─────────────────────────────────────────
   const runOneScan = async () => {
     if (!cameraRef.current) return;
 
-    // ── Clear previous bounding boxes immediately ─────────────
-    // Without this, the coloured boxes and labels from the last
-    // scan stay drawn on the camera until the new result arrives
-    // — which looks wrong, especially if the person has moved.
-    // We keep the last verdict text in the result card (so the
-    // user can still read it) but wipe the camera overlay clean.
+    // Clear stale bounding boxes immediately so the overlay
+    // doesn't show boxes from the previous frame while we wait
     setLastResult(prev => prev ? { ...prev, boxes: [] } : null);
 
-    // ── Phase 1: Capture & analyse ────────────────────────────
     setIsScanning(true);
     let result = null;
 
     try {
       const photo = await cameraRef.current.takePictureAsync({
         base64:         true,
-        quality:        0.7,
+        quality:        0.8,     // Slightly higher quality for YOLO
         skipProcessing: true,
       });
-      result = await scanImage(photo.base64);
+      result = await scanImage(photo.base64, sensitivity);
     } catch (error) {
       result = {
-        verdict:    'UNKNOWN',
-        reason:     'Scan error: ' + error.message,
-        confidence: 0,
-        coverage:   0,
-        vest_type:  'none',
-        people:     0,
-        boxes:      [],
+        verdict:          'UNKNOWN',
+        reason:           'Scan error: ' + error.message,
+        confidence:       0,
+        coverage:         0,
+        vest_type:        'none',
+        people:           0,
+        boxes:            [],
+        detection_method: 'error',
       };
     } finally {
       setIsScanning(false);
     }
 
-    // Stop here if user tapped End Scanning while we were processing
     if (!liveScanActive.current) return;
 
-    // Show the result on screen
     setLastResult(result);
     addToHistory(result);
 
-    // ── Phase 2: Play the appropriate voice alert ─────────────
-    // We AWAIT this so the loop waits for the voice to finish
-    // before starting the pause timer or the next scan.
     if (result.verdict === 'COMPLIANT') {
       setIsSpeaking(true);
-      await playCompliantAlert();      // "Welcome aboard"
+      await playCompliantAlert();
       setIsSpeaking(false);
-
     } else if (result.verdict === 'NON_COMPLIANT') {
       setIsSpeaking(true);
-      await playNonCompliantAlert();   // "Put on a life jacket..."
+      await playNonCompliantAlert();
       setIsSpeaking(false);
     }
-    // NO_PERSON and UNKNOWN play no audio — scan silently continues
   };
 
-  // ── startLiveScan() ───────────────────────────────────────
+  // ── startLiveScan ──────────────────────────────────────
   const startLiveScan = useCallback(async () => {
     if (liveScanActive.current) return;
     if (!cameraRef.current)     return;
@@ -140,29 +134,25 @@ export function useScanner() {
     setLastResult(null);
 
     while (liveScanActive.current) {
-      // Run one full scan + wait for voice to finish
       await runOneScan();
-
-      // Short pause after audio ends before next scan
       if (liveScanActive.current) {
-        await new Promise(resolve => setTimeout(resolve, POST_AUDIO_PAUSE_MS));
+        await new Promise(r => setTimeout(r, POST_AUDIO_PAUSE_MS));
       }
     }
 
     setIsLiveScanning(false);
     setIsScanning(false);
     setIsSpeaking(false);
-
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addToHistory]);
+  }, [addToHistory, sensitivity]);
 
-  // ── stopLiveScan() ────────────────────────────────────────
+  // ── stopLiveScan ───────────────────────────────────────
   const stopLiveScan = useCallback(() => {
     liveScanActive.current = false;
     setIsLiveScanning(false);
     setIsScanning(false);
     setIsSpeaking(false);
-    stopAlert();   // Cut the voice immediately
+    stopAlert();
   }, []);
 
   return {
@@ -175,9 +165,12 @@ export function useScanner() {
     stopLiveScan,
     isLiveScanning,
     isScanning,
-    isSpeaking,     // New — lets the UI show "Speaking..." status
+    isSpeaking,
     lastResult,
     history,
     serverOnline,
+    healthInfo,
+    sensitivity,
+    setSensitivity,
   };
 }

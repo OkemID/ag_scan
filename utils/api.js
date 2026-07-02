@@ -1,112 +1,96 @@
 // ─────────────────────────────────────────────────────────────
 // utils/api.js
 //
-// This file handles ALL communication with our Python backend.
-// Every function here sends data to the server and returns the
-// result. Keeping this separate means:
-//   - The rest of the app never worries about URLs or headers
-//   - If you change the server address, you only edit this file
+// All HTTP communication with the FastAPI backend.
+//
+// Changes from v1:
+//   - sensitivity is now included in every scan request so the
+//     UI slider actually affects detection (was always ignored).
+//   - detection_method is preserved in error objects so the
+//     UI badge always has something to show.
+//   - pingServer() now returns the full health payload so the
+//     header can show which detector is active (YOLO vs HSV).
 // ─────────────────────────────────────────────────────────────
 
-// The address of our FastAPI server.
-// When running locally: http://localhost:8000
-// On a real network: replace with your machine's IP address,
-// e.g. http://192.168.1.42:8000  (find it with ipconfig/ifconfig)
-const SERVER_URL = "http://10.199.73.230:8000";
+// ── Server address ────────────────────────────────────────────
+// Change this to your machine's local IP address when running
+// on a physical device (phone + computer on the same Wi-Fi).
+// Example: 'http://192.168.1.42:8000'
+// Find your IP:  ifconfig (Mac/Linux)  or  ipconfig (Windows)
+const SERVER_URL = "http://10.250.2.230:8000";
 
+const REQUEST_TIMEOUT_MS = 15_000;
 
-// How long (in milliseconds) to wait before giving up on a request.
-// 15 seconds is generous — detection should be much faster.
-const REQUEST_TIMEOUT_MS = 15000;
 
 // ─────────────────────────────────────────────────────────────
 // pingServer()
 //
-// Sends a simple "are you there?" request to the backend.
-// Returns true if the server replied, false if it didn't.
-//
-// We call this when the app starts so we can show a green/red
-// connection indicator in the header.
+// Returns the health payload { status, yolo_model } on success,
+// or null on failure. The header component uses yolo_model to
+// show which detection path is active.
 // ─────────────────────────────────────────────────────────────
 export async function pingServer() {
   try {
-    const response = await fetch(`${SERVER_URL}/health`, {
-      method: 'GET',
-    });
-    // If the server responds with HTTP 200 OK, we're connected
-    return response.ok;
-  } catch (error) {
-    // Network error = server is not reachable
-    return false;
+    const response = await fetch(`${SERVER_URL}/health`, { method: 'GET' });
+    if (!response.ok) return null;
+    return await response.json();   // { status, service, yolo_model }
+  } catch {
+    return null;
   }
 }
 
+
 // ─────────────────────────────────────────────────────────────
-// scanImage(base64Image)
+// scanImage(base64Image, sensitivity)
 //
-// Sends a photo to the backend for hi-vis detection.
-//
-// What it does step by step:
-//   1. Wraps the base64 image in a JSON object
-//   2. POSTs it to /scan on our FastAPI server
-//   3. Waits for the result (with a timeout so we don't hang)
-//   4. Returns the result object, or an error object if it failed
-//
-// The result object looks like this:
-//   {
-//     verdict:   "COMPLIANT" | "NON_COMPLIANT" | "NO_PERSON" | "UNKNOWN",
-//     reason:    "Human-readable explanation",
-//     confidence: 85,          // 0–100 percent
-//     coverage:  14.3,         // % of torso pixels that are hi-vis
-//     people:    1,            // how many people were detected
-//     boxes:     [             // bounding boxes as 0–1 ratios
-//       { x: 0.1, y: 0.05, w: 0.4, h: 0.8, compliant: true }
-//     ]
-//   }
+// Posts the image and sensitivity to /scan.
+// sensitivity (number, 1–50) is now forwarded to the backend
+// so the slider in the UI changes detection behaviour.
 // ─────────────────────────────────────────────────────────────
-export async function scanImage(base64Image) {
-  // AbortController lets us cancel the fetch if it takes too long
+export async function scanImage(base64Image, sensitivity = 10) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeoutId  = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
     const response = await fetch(`${SERVER_URL}/scan`, {
-      method: 'POST',
-      headers: {
-        // Tell the server we're sending JSON
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        // The backend expects the image as a base64 string
-        image: base64Image,
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        image:       base64Image,
+        sensitivity: sensitivity,   // ← fixed: was never sent in v1
       }),
-      signal: controller.signal,  // Attach the timeout signal
+      signal: controller.signal,
     });
 
-    // Clear the timeout — we got a response in time
     clearTimeout(timeoutId);
 
-    // If the server returned an error status (e.g. 500), throw it
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `Server error: ${response.status}`);
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `Server error: ${response.status}`);
     }
 
-    // Parse and return the JSON result from the server
     return await response.json();
 
   } catch (error) {
     clearTimeout(timeoutId);
 
-    // Give back a structured error so the UI can show something sensible
+    const base = {
+      verdict:          'UNKNOWN',
+      confidence:       0,
+      coverage:         0,
+      people:           0,
+      boxes:            [],
+      vest_type:        'none',
+      detection_method: 'error',
+    };
+
     if (error.name === 'AbortError') {
-      return { verdict: 'UNKNOWN', reason: 'Request timed out. Is the server running?', confidence: 0, coverage: 0, people: 0, boxes: [] };
+      return { ...base, reason: 'Request timed out. Is the server running?' };
     }
-
-    if (error.message.includes('Network request failed') || error.message.includes('fetch')) {
-      return { verdict: 'UNKNOWN', reason: `Cannot reach server at ${SERVER_URL}. Check it is running.`, confidence: 0, coverage: 0, people: 0, boxes: [] };
+    if (error.message.includes('Network request failed') ||
+        error.message.includes('fetch')) {
+      return { ...base, reason: `Cannot reach server at ${SERVER_URL}.` };
     }
-
-    return { verdict: 'UNKNOWN', reason: error.message, confidence: 0, coverage: 0, people: 0, boxes: [] };
+    return { ...base, reason: error.message };
   }
 }
