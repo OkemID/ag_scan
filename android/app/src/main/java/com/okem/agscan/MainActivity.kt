@@ -1,4 +1,4 @@
-package com.agscanoffline
+package com.okem.agscan
 
 import android.os.Build
 import android.os.Bundle

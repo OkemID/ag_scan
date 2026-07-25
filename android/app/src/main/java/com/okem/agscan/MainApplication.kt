@@ -1,4 +1,4 @@
-package com.agscanoffline
+package com.okem.agscan
 
 import android.app.Application
 import android.content.res.Configuration
