@@ -31,7 +31,7 @@ extensions.configure(com.facebook.react.ReactSettingsExtension) { ex ->
 }
 expoAutolinking.useExpoModules()
 
-rootProject.name = 'AG Scan Offline'
+rootProject.name = 'AGScanOffline'
 
 expoAutolinking.useExpoVersionCatalog()
 

@@ -4,34 +4,32 @@
     "slug": "ag-scan-offline",
     "version": "1.0.0",
     "orientation": "portrait",
-    "platforms": [
-      "android"
-    ],
+    "platforms": ["android"],
     "userInterfaceStyle": "dark",
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "assetBundlePatterns": ["**/*"],
     "updates": {
       "enabled": false
     },
     "android": {
       "package": "com.okem.agscan",
       "versionCode": 1,
-      "permissions": [
-        "CAMERA",
-        "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO",
-        "android.permission.MODIFY_AUDIO_SETTINGS"
-      ]
+      "permissions": ["CAMERA"],
+      "blockedPermissions": ["android.permission.RECORD_AUDIO"]
     },
     "plugins": [
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow AG Scan to use the camera for on-device person and safety-colour detection."
+          "cameraPermission": "Allow AG Scan to use the camera for on-device person and safety-colour detection.",
+          "recordAudioAndroid": false
         }
       ],
-      "expo-audio",
+      [
+        "expo-audio",
+        {
+          "recordAudioAndroid": false
+        }
+      ],
       "expo-asset"
     ],
     "extra": {
