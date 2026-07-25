@@ -2,7 +2,7 @@
   "expo": {
     "name": "AG Scan Offline",
     "slug": "ag-scan-offline",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "orientation": "portrait",
     "platforms": ["android"],
     "userInterfaceStyle": "dark",

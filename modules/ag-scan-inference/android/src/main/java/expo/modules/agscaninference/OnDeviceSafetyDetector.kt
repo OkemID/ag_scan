@@ -38,6 +38,7 @@ internal class OnDeviceSafetyDetector(
   private var outputShape: IntArray = intArrayOf()
   private var inputWidth: Int = 0
   private var inputHeight: Int = 0
+  private var inputChannelsFirst: Boolean = false
   private var initMessage: String = "Detector has not been initialized."
 
   @Synchronized
@@ -63,15 +64,34 @@ internal class OnDeviceSafetyDetector(
       require(outTensor.dataType() == DataType.FLOAT32) {
         "AG Scan V1 expects FLOAT32 model output, but received ${outTensor.dataType()}."
       }
-      require(inputShape.size == 4 && inputShape[0] == 1 && inputShape[3] == 3) {
-        "Unsupported model input ${inputShape.contentToString()}; expected [1, height, width, 3]."
-      }
-      require(outputShape.size == 3 && outputShape[0] == 1) {
-        "Unsupported model output ${outputShape.contentToString()}; expected a 3D YOLO tensor."
-      }
+      val isChannelsFirst =
+  inputShape.size == 4 &&
+    inputShape[0] == 1 &&
+    inputShape[1] == 3
 
-      inputHeight = inputShape[1]
-      inputWidth = inputShape[2]
+  val isChannelsLast =
+    inputShape.size == 4 &&
+      inputShape[0] == 1 &&
+      inputShape[3] == 3
+
+  require(isChannelsFirst || isChannelsLast) {
+    "Unsupported model input ${inputShape.contentToString()}; " +
+      "expected NCHW [1, 3, height, width] or NHWC [1, height, width, 3]."
+  }
+
+  require(outputShape.size == 3 && outputShape[0] == 1) {
+    "Unsupported model output ${outputShape.contentToString()}; expected a 3D YOLO tensor."
+  }
+
+  inputChannelsFirst = isChannelsFirst
+
+  if (inputChannelsFirst) {
+    inputHeight = inputShape[2]
+    inputWidth = inputShape[3]
+  } else {
+    inputHeight = inputShape[1]
+    inputWidth = inputShape[2]
+  }
       interpreter = loaded
       initMessage = "Person model loaded. Colour checking runs fully on this phone."
       return status()
@@ -89,6 +109,7 @@ internal class OnDeviceSafetyDetector(
     "model" to MODEL_ASSET,
     "inputShape" to inputShape.toList(),
     "outputShape" to outputShape.toList(),
+    "inputLayout" to if (inputChannelsFirst) "NCHW" else "NHWC",
     "message" to initMessage,
     "networkRequired" to false
   )
@@ -272,10 +293,27 @@ internal class OnDeviceSafetyDetector(
     val buffer = ByteBuffer.allocateDirect(pixels.size * 3 * 4)
       .order(ByteOrder.nativeOrder())
 
+  if (inputChannelsFirst) {
+    // NCHW: all red values, followed by all green values,
+    // followed by all blue values.
     for (pixel in pixels) {
       buffer.putFloat(Color.red(pixel) / 255f)
+    }
+
+    for (pixel in pixels) {
       buffer.putFloat(Color.green(pixel) / 255f)
+    }
+
+    for (pixel in pixels) {
       buffer.putFloat(Color.blue(pixel) / 255f)
+    }
+    } else {
+      // NHWC: RGB values are interleaved for each pixel.
+      for (pixel in pixels) {
+        buffer.putFloat(Color.red(pixel) / 255f)
+        buffer.putFloat(Color.green(pixel) / 255f)
+        buffer.putFloat(Color.blue(pixel) / 255f)
+      }
     }
     buffer.rewind()
 
