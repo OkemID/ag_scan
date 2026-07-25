@@ -30,8 +30,8 @@ function BoundingBox({ box, containerW, containerH }) {
 
   // Show YOLO confidence percentage if available
   const confLabel = box.coverage > 0
-    ? `${box.compliant ? 'HI-VIS' : 'NO VEST'} ${labelText} ${Math.round(box.coverage)}%`
-    : `${box.compliant ? 'HI-VIS ✓' : 'NO VEST ✗'}`;
+    ? `${box.compliant ? 'COLOUR PASS' : 'CHECK'} ${labelText} ${Math.round(box.coverage)}%`
+    : `${box.compliant ? 'COLOUR PASS ✓' : 'CHECK ✗'}`;
 
   return (
     <View style={[styles.box, { left: px, top: py, width: pw, height: ph, borderColor }]}>
@@ -85,8 +85,8 @@ function ResultFlash({ verdict }) {
   }, [verdict]);
 
   const config = {
-    COMPLIANT:     { color: COLORS.green,  symbol: '✓', label: 'COMPLIANT' },
-    NON_COMPLIANT: { color: COLORS.red,    symbol: '✗', label: 'NON-COMPLIANT' },
+    COLOUR_CHECK_PASSED:  { color: COLORS.green, symbol: '✓', label: 'COLOUR PASS' },
+    MANUAL_CHECK_REQUIRED: { color: COLORS.red, symbol: '!', label: 'MANUAL CHECK' },
     NO_PERSON:     { color: COLORS.orange, symbol: '?', label: 'NO PERSON' },
     UNKNOWN:       { color: COLORS.muted,  symbol: '!', label: 'UNKNOWN' },
   }[verdict] ?? { color: COLORS.muted, symbol: '!', label: 'UNKNOWN' };

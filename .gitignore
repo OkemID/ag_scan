@@ -1,20 +1,60 @@
+﻿# Dependencies
 node_modules/
+
+# Expo
 .expo/
+.expo-shared/
 dist/
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
-*.orig.*
 web-build/
 
-# Backend
-backend/venv/
-backend/__pycache__/
-backend/*.pyc
+# Python model-export environments
+.model-venv/
+.venv/
+venv/
 __pycache__/
+*.py[cod]
 
-# OS
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Android build output
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+
+# Editors and operating system
+.vscode/
+.idea/
 .DS_Store
+Thumbs.db
+
+# Logs
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local Python/model export environments
+.model-venv/
+.venv/
+venv/
+**/__pycache__/
+*.py[cod]
+
+# Expo local files
+.expo/
+
+# Android generated build output
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+
+# Installable build files
+*.apk
+*.aab

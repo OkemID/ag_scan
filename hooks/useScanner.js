@@ -1,108 +1,111 @@
-// ─────────────────────────────────────────────────────────────
-// hooks/useScanner.js
-//
-// All scanning state and logic. Changes from v1:
-//
-//   - sensitivity state (default 10%) lives here and is passed
-//     to scanImage() so the UI slider now actually does something.
-//
-//   - pingServer() now returns a health payload, not just a bool.
-//     serverOnline remains a bool; healthInfo carries the detail
-//     (including yolo_model status) for the Header to display.
-//
-//   - history entries now include detection_method and
-//     vestType so ScanHistory can show richer rows.
-//
-//   - runOneScan clears stale boxes immediately before capture
-//     (carried forward from v1 — this behaviour is correct).
-// ─────────────────────────────────────────────────────────────
-
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { useCameraPermissions }                       from 'expo-camera';
-import { pingServer, scanImage }                      from '../utils/api';
+import { useCameraPermissions } from 'expo-camera';
+import {
+  initializeDetector,
+  scanImageOnDevice,
+} from '../utils/onDeviceInference';
 import {
   playCompliantAlert,
   playNonCompliantAlert,
   stopAlert,
-}                                                     from '../utils/audioAlert';
+} from '../utils/audioAlert';
 
 const POST_AUDIO_PAUSE_MS = 1_500;
-const MAX_HISTORY         = 10;
-const HEALTH_INTERVAL_MS  = 10_000;
+const MAX_HISTORY = 10;
 
 export function useScanner() {
   const [permission, requestPermission] = useCameraPermissions();
-  const cameraRef      = useRef(null);
+  const cameraRef = useRef(null);
   const liveScanActive = useRef(false);
 
   const [isLiveScanning, setIsLiveScanning] = useState(false);
-  const [isScanning,     setIsScanning]     = useState(false);
-  const [isSpeaking,     setIsSpeaking]     = useState(false);
-  const [lastResult,     setLastResult]     = useState(null);
-  const [serverOnline,   setServerOnline]   = useState(false);
-  const [healthInfo,     setHealthInfo]     = useState(null);   // full /health payload
-  const [history,        setHistory]        = useState([]);
-  const [facing,         setFacing]         = useState('back');
-  const [sensitivity,    setSensitivity]    = useState(10);     // 1–50, default 10%
+  const [isScanning, setIsScanning] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [lastResult, setLastResult] = useState(null);
+  const [modelReady, setModelReady] = useState(false);
+  const [modelStatus, setModelStatus] = useState({
+    ready: false,
+    mode: 'on-device-yolo+hsv',
+    message: 'Loading the on-device person model…',
+  });
+  const [history, setHistory] = useState([]);
+  const [facing, setFacing] = useState('back');
+  const [sensitivity, setSensitivity] = useState(12);
 
-  // ── Server health poll ───────────────────────────────────
   useEffect(() => {
-    async function checkServer() {
-      const payload = await pingServer();
-      setServerOnline(!!payload);
-      setHealthInfo(payload);
+    let mounted = true;
+
+    async function loadDetector() {
+      try {
+        const status = await initializeDetector();
+        if (!mounted) return;
+        setModelStatus(status);
+        setModelReady(Boolean(status?.ready));
+      } catch (error) {
+        if (!mounted) return;
+        setModelStatus({
+          ready: false,
+          mode: 'on-device-yolo+hsv',
+          message: error?.message || 'Could not load the on-device AI model.',
+        });
+        setModelReady(false);
+      }
     }
-    checkServer();
-    const id = setInterval(checkServer, HEALTH_INTERVAL_MS);
-    return () => clearInterval(id);
+
+    loadDetector();
+    return () => {
+      mounted = false;
+      liveScanActive.current = false;
+    };
   }, []);
 
   const flip = useCallback(() => {
-    setFacing(f => f === 'back' ? 'front' : 'back');
+    setFacing((current) => (current === 'back' ? 'front' : 'back'));
   }, []);
 
   const addToHistory = useCallback((result) => {
-    setHistory(prev => [
+    setHistory((previous) => [
       {
-        verdict:         result.verdict,
-        time:            new Date(),
-        coverage:        result.coverage,
-        vestType:        result.vest_type,
+        verdict: result.verdict,
+        time: new Date(),
+        coverage: result.coverage,
+        vestType: result.vest_type,
         detectionMethod: result.detection_method,
-        people:          result.people,
+        people: result.people,
+        durationMs: result.duration_ms,
       },
-      ...prev,
+      ...previous,
     ].slice(0, MAX_HISTORY));
   }, []);
 
-  // ── runOneScan ─────────────────────────────────────────
-  const runOneScan = async () => {
-    if (!cameraRef.current) return;
+  const runOneScan = useCallback(async () => {
+    if (!cameraRef.current || !modelReady) return;
 
-    // Clear stale bounding boxes immediately so the overlay
-    // doesn't show boxes from the previous frame while we wait
-    setLastResult(prev => prev ? { ...prev, boxes: [] } : null);
-
+    setLastResult((previous) => (
+      previous ? { ...previous, boxes: [] } : null
+    ));
     setIsScanning(true);
-    let result = null;
 
+    let result;
     try {
       const photo = await cameraRef.current.takePictureAsync({
-        base64:         true,
-        quality:        0.8,     // Slightly higher quality for YOLO
-        skipProcessing: true,
+        base64: false,
+        quality: 0.8,
+        skipProcessing: false,
       });
-      result = await scanImage(photo.base64, sensitivity);
+
+      result = await scanImageOnDevice(photo.uri, sensitivity);
     } catch (error) {
       result = {
-        verdict:          'UNKNOWN',
-        reason:           'Scan error: ' + error.message,
-        confidence:       0,
-        coverage:         0,
-        vest_type:        'none',
-        people:           0,
-        boxes:            [],
+        verdict: 'UNKNOWN',
+        reason: `Scan error: ${error?.message || 'Unknown error'}`,
+        confidence: 0,
+        coverage: 0,
+        vest_type: 'none',
+        people: 0,
+        boxes: [],
         detection_method: 'error',
+        duration_ms: 0,
       };
     } finally {
       setIsScanning(false);
@@ -113,21 +116,19 @@ export function useScanner() {
     setLastResult(result);
     addToHistory(result);
 
-    if (result.verdict === 'COMPLIANT') {
+    if (result.verdict === 'COLOUR_CHECK_PASSED') {
       setIsSpeaking(true);
       await playCompliantAlert();
       setIsSpeaking(false);
-    } else if (result.verdict === 'NON_COMPLIANT') {
+    } else if (result.verdict === 'MANUAL_CHECK_REQUIRED') {
       setIsSpeaking(true);
       await playNonCompliantAlert();
       setIsSpeaking(false);
     }
-  };
+  }, [addToHistory, modelReady, sensitivity]);
 
-  // ── startLiveScan ──────────────────────────────────────
   const startLiveScan = useCallback(async () => {
-    if (liveScanActive.current) return;
-    if (!cameraRef.current)     return;
+    if (liveScanActive.current || !cameraRef.current || !modelReady) return;
 
     liveScanActive.current = true;
     setIsLiveScanning(true);
@@ -136,17 +137,15 @@ export function useScanner() {
     while (liveScanActive.current) {
       await runOneScan();
       if (liveScanActive.current) {
-        await new Promise(r => setTimeout(r, POST_AUDIO_PAUSE_MS));
+        await new Promise((resolve) => setTimeout(resolve, POST_AUDIO_PAUSE_MS));
       }
     }
 
     setIsLiveScanning(false);
     setIsScanning(false);
     setIsSpeaking(false);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addToHistory, sensitivity]);
+  }, [modelReady, runOneScan]);
 
-  // ── stopLiveScan ───────────────────────────────────────
   const stopLiveScan = useCallback(() => {
     liveScanActive.current = false;
     setIsLiveScanning(false);
@@ -168,8 +167,8 @@ export function useScanner() {
     isSpeaking,
     lastResult,
     history,
-    serverOnline,
-    healthInfo,
+    modelReady,
+    modelStatus,
     sensitivity,
     setSensitivity,
   };
