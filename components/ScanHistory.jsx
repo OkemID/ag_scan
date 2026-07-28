@@ -3,8 +3,9 @@ import { View, Text, FlatList, StyleSheet } from 'react-native';
 import { COLORS, SIZES } from '../constants/theme';
 
 const DOT_COLORS = {
-  COLOUR_CHECK_PASSED: COLORS.green,
-  MANUAL_CHECK_REQUIRED: COLORS.red,
+  LIFE_JACKET_CHECK_PASSED: COLORS.green,
+  LIFE_JACKET_MISSING: COLORS.red,
+  MANUAL_CHECK_REQUIRED: COLORS.orange,
   NO_PERSON: COLORS.orange,
   UNKNOWN: COLORS.muted,
 };
@@ -19,12 +20,12 @@ function HistoryItem({ item }) {
     <View style={styles.item}>
       <View style={[styles.dot, { backgroundColor: dotColor }]} />
       <Text style={styles.verdict}>{item.verdict.replace(/_/g, ' ')}</Text>
-      {item.coverage != null && item.coverage > 0 && (
-        <Text style={styles.coverage}>{item.coverage.toFixed(0)}%</Text>
+      {item.confidence != null && item.confidence > 0 && (
+        <Text style={styles.confidence}>{Math.round(item.confidence)}%</Text>
       )}
       {item.people != null && <Text style={styles.people}>{item.people}👤</Text>}
       <View style={styles.methBadge}>
-        <Text style={styles.methText}>D</Text>
+        <Text style={styles.methText}>AI</Text>
       </View>
       <Text style={styles.time}>{timeLabel}</Text>
     </View>
@@ -64,7 +65,7 @@ const styles = StyleSheet.create({
   },
   dot: { width: 7, height: 7, borderRadius: 3.5, flexShrink: 0 },
   verdict: { flex: 1, fontSize: 11, color: COLORS.text, fontWeight: '500' },
-  coverage: { fontSize: 12, color: COLORS.yellow, fontWeight: '600' },
+  confidence: { fontSize: 12, color: COLORS.yellow, fontWeight: '600' },
   people: { fontSize: 11, color: COLORS.textDim },
   methBadge: {
     paddingHorizontal: 5,
@@ -74,7 +75,7 @@ const styles = StyleSheet.create({
     borderColor: COLORS.purple + '50',
     backgroundColor: COLORS.purple + '15',
   },
-  methText: { fontSize: 9, fontWeight: '700', color: COLORS.purple },
+  methText: { fontSize: 8, fontWeight: '700', color: COLORS.purple },
   time: { fontSize: 11, color: COLORS.muted },
   sep: { height: 4 },
 });

@@ -16,111 +16,93 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
-import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
-private const val MODEL_ASSET = "person.tflite"
+private const val LIFE_JACKET_MODEL_ASSET = "life_jacket.tflite"
+private const val PERSON_MODEL_ASSET = "person.tflite"
+
+private const val NOT_WEAR_CLASS_ID = 0
+private const val WEAR_CLASS_ID = 1
+
+private const val CANDIDATE_CONFIDENCE = 0.20f
 private const val PERSON_CONFIDENCE = 0.25f
-private const val PERSON_IOU = 0.50f
-private const val MIN_PERSON_AREA_PERCENT = 0.45f
-private const val PERSON_BOX_PADDING = 0.08f
+private const val NMS_IOU = 0.50f
+private const val MIN_BOX_AREA_PERCENT = 0.35f
+private const val BOX_PADDING = 0.02f
 private const val MAX_PEOPLE = 20
 
 internal class OnDeviceSafetyDetector(
   private val context: Context
 ) : AutoCloseable {
-  private var interpreter: Interpreter? = null
-  private var inputShape: IntArray = intArrayOf()
-  private var outputShape: IntArray = intArrayOf()
-  private var inputWidth: Int = 0
-  private var inputHeight: Int = 0
-  private var inputChannelsFirst: Boolean = false
+  private var lifeJacketRuntime: ModelRuntime? = null
+  private var personRuntime: ModelRuntime? = null
   private var initMessage: String = "Detector has not been initialized."
 
   @Synchronized
   fun initialize(): Map<String, Any> {
-    if (interpreter != null) return status()
+    if (lifeJacketRuntime != null) return status()
 
-    try {
-      val modelBuffer = loadAssetBuffer(MODEL_ASSET)
-      val options = Interpreter.Options().apply {
-        setNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(2, 4))
+    return try {
+      lifeJacketRuntime = loadRuntime(LIFE_JACKET_MODEL_ASSET)
+      personRuntime = try {
+        loadRuntime(PERSON_MODEL_ASSET)
+      } catch (_: Exception) {
+        null
       }
 
-      val loaded = Interpreter(modelBuffer, options)
-      val inTensor = loaded.getInputTensor(0)
-      val outTensor = loaded.getOutputTensor(0)
-
-      inputShape = inTensor.shape()
-      outputShape = outTensor.shape()
-
-      require(inTensor.dataType() == DataType.FLOAT32) {
-        "AG Scan V1 expects a FLOAT32 person model, but received ${inTensor.dataType()}."
+      val fallbackMessage = if (personRuntime != null) {
+        "Person fallback is ready."
+      } else {
+        "Person fallback is unavailable; the life-jacket model remains active."
       }
-      require(outTensor.dataType() == DataType.FLOAT32) {
-        "AG Scan V1 expects FLOAT32 model output, but received ${outTensor.dataType()}."
-      }
-      val isChannelsFirst =
-  inputShape.size == 4 &&
-    inputShape[0] == 1 &&
-    inputShape[1] == 3
 
-  val isChannelsLast =
-    inputShape.size == 4 &&
-      inputShape[0] == 1 &&
-      inputShape[3] == 3
-
-  require(isChannelsFirst || isChannelsLast) {
-    "Unsupported model input ${inputShape.contentToString()}; " +
-      "expected NCHW [1, 3, height, width] or NHWC [1, height, width, 3]."
-  }
-
-  require(outputShape.size == 3 && outputShape[0] == 1) {
-    "Unsupported model output ${outputShape.contentToString()}; expected a 3D YOLO tensor."
-  }
-
-  inputChannelsFirst = isChannelsFirst
-
-  if (inputChannelsFirst) {
-    inputHeight = inputShape[2]
-    inputWidth = inputShape[3]
-  } else {
-    inputHeight = inputShape[1]
-    inputWidth = inputShape[2]
-  }
-      interpreter = loaded
-      initMessage = "Person model loaded. Colour checking runs fully on this phone."
-      return status()
+      initMessage = "Wear/not-wear model loaded. $fallbackMessage"
+      status()
     } catch (error: Exception) {
-      interpreter?.close()
-      interpreter = null
-      initMessage = error.message ?: "Could not load the on-device person model."
-      return status()
+      close()
+      initMessage = error.message ?: "Could not load the on-device life-jacket model."
+      status()
     }
   }
 
-  fun status(): Map<String, Any> = mapOf(
-    "ready" to (interpreter != null),
-    "mode" to "on-device-yolo+hsv",
-    "model" to MODEL_ASSET,
-    "inputShape" to inputShape.toList(),
-    "outputShape" to outputShape.toList(),
-    "inputLayout" to if (inputChannelsFirst) "NCHW" else "NHWC",
-    "message" to initMessage,
-    "networkRequired" to false
-  )
+  fun status(): Map<String, Any> {
+    val life = lifeJacketRuntime
+    val person = personRuntime
+
+    return mapOf(
+      "ready" to (life != null),
+      "mode" to "on-device-yolo-wear-notwear",
+      "model" to LIFE_JACKET_MODEL_ASSET,
+      "classes" to listOf("notwear", "wear"),
+      "inputShape" to (life?.inputShape?.toList() ?: emptyList<Int>()),
+      "outputShape" to (life?.outputShape?.toList() ?: emptyList<Int>()),
+      "inputLayout" to when {
+        life == null -> "unknown"
+        life.inputChannelsFirst -> "NCHW"
+        else -> "NHWC"
+      },
+      "outputLayout" to when {
+        life == null -> "unknown"
+        life.outputChannelsFirst -> "channels-first"
+        else -> "candidates-first"
+      },
+      "personFallbackReady" to (person != null),
+      "message" to initMessage,
+      "networkRequired" to false
+    )
+  }
 
   @Synchronized
-  fun scan(imageUri: String, sensitivityInput: Float): Map<String, Any> {
+  fun scan(imageUri: String, confidenceThresholdInput: Float): Map<String, Any> {
     val startedAt = System.nanoTime()
-    val activeInterpreter = interpreter
+    val life = lifeJacketRuntime
       ?: throw IllegalStateException("On-device AI is not ready. ${status()["message"]}")
 
-    val sensitivity = sensitivityInput.coerceIn(3f, 25f)
+    val decisionThreshold = (confidenceThresholdInput / 100f).coerceIn(0.35f, 0.90f)
     val bitmap = decodeOrientedBitmap(imageUri)
       ?: return errorResult("Could not decode the camera image.", elapsedMs(startedAt))
 
@@ -129,66 +111,212 @@ internal class OnDeviceSafetyDetector(
         return noPersonResult("Frame appears empty.", "quality-check", elapsedMs(startedAt))
       }
 
-      val prepared = prepareLetterboxedInput(bitmap)
-      val detections = runPersonInference(activeInterpreter, prepared)
+      val lifeInput = prepareLetterboxedInput(bitmap, life)
+      val lifeValues = runFloatModel(life, lifeInput)
+      val detections = parseLifeJacketOutput(life, lifeValues, lifeInput)
 
       if (detections.isEmpty()) {
-        return noPersonResult(
-          "No person detected — objects and background were ignored.",
-          "on-device-yolo-person",
-          elapsedMs(startedAt)
+        val fallback = personRuntime
+        if (fallback != null) {
+          val personInput = prepareLetterboxedInput(bitmap, fallback)
+          val personValues = runFloatModel(fallback, personInput)
+          val people = parsePersonOutput(fallback, personValues, personInput)
+
+          if (people.isEmpty()) {
+            return noPersonResult(
+              "No person detected. Move closer and keep the full person inside the frame.",
+              "on-device-yolo-person-fallback",
+              elapsedMs(startedAt)
+            )
+          }
+
+          return manualResult(
+            reason = "${people.size} person(s) detected, but the wear/not-wear model was not confident enough. Reframe and inspect manually.",
+            people = people.size,
+            boxes = people.map { person ->
+              person.toBoxMap(
+                sourceWidth = bitmap.width,
+                sourceHeight = bitmap.height,
+                decision = "uncertain",
+                className = "person",
+                confidence = person.score
+              )
+            },
+            confidence = 0,
+            durationMs = elapsedMs(startedAt)
+          )
+        }
+
+        return manualResult(
+          reason = "No confident wear/not-wear detection was produced. Reframe the person and inspect manually.",
+          people = 0,
+          boxes = emptyList(),
+          confidence = 0,
+          durationMs = elapsedMs(startedAt)
         )
       }
 
-      val personResults = detections.map { detection ->
-        val hsv = analyseSafetyColours(bitmap, detection, sensitivity)
-        PersonColourResult(detection, hsv)
+      val evaluated = detections.map { detection ->
+        val decision = when {
+          detection.score < decisionThreshold -> "uncertain"
+          detection.classId == WEAR_CLASS_ID -> "wear"
+          else -> "notwear"
+        }
+        EvaluatedDetection(detection, decision)
       }
 
-      val manualChecks = personResults.count { !it.hsv.passed }
-      val allPassed = manualChecks == 0
-      val overallCoverage = personResults.minOfOrNull { it.hsv.coverage } ?: 0f
-      val overallConfidence = personResults.minOfOrNull { it.hsv.confidence } ?: 0
-      val dominant = personResults
-        .filter { it.hsv.vestType != "none" }
-        .maxByOrNull { it.hsv.coverage }
-        ?.hsv?.vestType ?: "none"
+      val wearingCount = evaluated.count { it.decision == "wear" }
+      val notWearingCount = evaluated.count { it.decision == "notwear" }
+      val uncertainCount = evaluated.count { it.decision == "uncertain" }
+      val complianceRate = if (evaluated.isEmpty()) {
+        0f
+      } else {
+        wearingCount * 100f / evaluated.size.toFloat()
+      }
 
-      val boxes = personResults.map { person ->
-        mapOf(
-          "x" to round4(person.detection.left / bitmap.width.toFloat()),
-          "y" to round4(person.detection.top / bitmap.height.toFloat()),
-          "w" to round4(person.detection.width / bitmap.width.toFloat()),
-          "h" to round4(person.detection.height / bitmap.height.toFloat()),
-          "compliant" to person.hsv.passed,
-          "coverage" to round1(person.hsv.coverage)
+      val boxes = evaluated.map { result ->
+        result.detection.toBoxMap(
+          sourceWidth = bitmap.width,
+          sourceHeight = bitmap.height,
+          decision = result.decision,
+          className = className(result.detection.classId),
+          confidence = result.detection.score
         )
       }
 
       val verdict: String
       val reason: String
-      if (allPassed) {
-        verdict = "COLOUR_CHECK_PASSED"
-        reason = "Recognised safety colouring was visible on all ${personResults.size} detected person(s). Confirm with a physical safety check."
-      } else {
-        verdict = "MANUAL_CHECK_REQUIRED"
-        reason = "Recognised safety colouring was not sufficiently visible on $manualChecks of ${personResults.size} detected person(s). Inspect manually."
+      val overallConfidence: Int
+
+      when {
+        notWearingCount > 0 -> {
+          verdict = "LIFE_JACKET_MISSING"
+          reason = "$notWearingCount of ${evaluated.size} detected person(s) is classified as not wearing a life jacket."
+          overallConfidence = evaluated
+            .filter { it.decision == "notwear" }
+            .maxOf { (it.detection.score * 100f).roundToInt() }
+        }
+
+        uncertainCount > 0 -> {
+          verdict = "MANUAL_CHECK_REQUIRED"
+          reason = "$uncertainCount of ${evaluated.size} detected person(s) is below the ${percentage(decisionThreshold)} decision threshold. Inspect manually."
+          overallConfidence = evaluated
+            .minOfOrNull { (it.detection.score * 100f).roundToInt() }
+            ?: 0
+        }
+
+        wearingCount == evaluated.size -> {
+          verdict = "LIFE_JACKET_CHECK_PASSED"
+          reason = "All ${evaluated.size} detected person(s) are classified as wearing a life jacket. Confirm fit and fastening physically."
+          overallConfidence = evaluated
+            .minOf { (it.detection.score * 100f).roundToInt() }
+        }
+
+        else -> {
+          verdict = "MANUAL_CHECK_REQUIRED"
+          reason = "The model produced an inconclusive result. Inspect manually."
+          overallConfidence = evaluated
+            .minOfOrNull { (it.detection.score * 100f).roundToInt() }
+            ?: 0
+        }
+      }
+
+      val resultType = when {
+        notWearingCount > 0 && wearingCount > 0 -> "mixed"
+        notWearingCount > 0 -> "not_wearing"
+        uncertainCount > 0 -> "uncertain"
+        wearingCount > 0 -> "wearing"
+        else -> "none"
       }
 
       return mapOf(
         "verdict" to verdict,
         "reason" to reason,
-        "confidence" to overallConfidence,
-        "coverage" to round1(overallCoverage),
-        "vest_type" to dominant,
-        "people" to personResults.size,
+        "confidence" to overallConfidence.coerceIn(0, 100),
+        "coverage" to round1(complianceRate),
+        "compliance_rate" to round1(complianceRate),
+        "vest_type" to resultType,
+        "people" to evaluated.size,
+        "wearing" to wearingCount,
+        "not_wearing" to notWearingCount,
+        "uncertain" to uncertainCount,
+        "decision_threshold" to percentage(decisionThreshold),
         "boxes" to boxes,
-        "detection_method" to "on-device-yolo+hsv-person-only",
+        "detection_method" to "on-device-yolo-wear-notwear",
         "duration_ms" to elapsedMs(startedAt),
-        "disclaimer" to "Colour detection is an assistance tool and does not confirm that an item is a certified life jacket."
+        "disclaimer" to "This visual model is an assistance tool. It does not verify certification, buoyancy, fit, fastening or physical condition."
+      )
+    } catch (error: Exception) {
+      return errorResult(
+        error.message ?: "The on-device model could not complete the scan.",
+        elapsedMs(startedAt)
       )
     } finally {
       bitmap.recycle()
+    }
+  }
+
+  private fun loadRuntime(assetName: String): ModelRuntime {
+    val modelBuffer = loadAssetBuffer(assetName)
+    val options = Interpreter.Options().apply {
+      setNumThreads(Runtime.getRuntime().availableProcessors().coerceIn(2, 4))
+    }
+
+    val interpreter = Interpreter(modelBuffer, options)
+
+    try {
+      val inputTensor = interpreter.getInputTensor(0)
+      val outputTensor = interpreter.getOutputTensor(0)
+      val inputShape = inputTensor.shape()
+      val outputShape = outputTensor.shape()
+
+      require(inputTensor.dataType() == DataType.FLOAT32) {
+        "$assetName expects a FLOAT32 input, but received ${inputTensor.dataType()}."
+      }
+      require(outputTensor.dataType() == DataType.FLOAT32) {
+        "$assetName expects a FLOAT32 output, but received ${outputTensor.dataType()}."
+      }
+
+      val inputChannelsFirst =
+        inputShape.size == 4 && inputShape[0] == 1 && inputShape[1] == 3
+      val inputChannelsLast =
+        inputShape.size == 4 && inputShape[0] == 1 && inputShape[3] == 3
+
+      require(inputChannelsFirst || inputChannelsLast) {
+        "Unsupported input ${inputShape.contentToString()} for $assetName; expected NCHW or NHWC RGB input."
+      }
+      require(outputShape.size == 3 && outputShape[0] == 1) {
+        "Unsupported output ${outputShape.contentToString()} for $assetName; expected a 3D YOLO tensor."
+      }
+
+      val inputHeight = if (inputChannelsFirst) inputShape[2] else inputShape[1]
+      val inputWidth = if (inputChannelsFirst) inputShape[3] else inputShape[2]
+
+      val dimA = outputShape[1]
+      val dimB = outputShape[2]
+      val outputChannelsFirst = dimA <= 512 && dimB > dimA
+      val outputChannels = if (outputChannelsFirst) dimA else dimB
+      val outputCandidates = if (outputChannelsFirst) dimB else dimA
+
+      require(outputChannels >= 5) {
+        "Unsupported output ${outputShape.contentToString()} for $assetName; fewer than five channels."
+      }
+
+      return ModelRuntime(
+        assetName = assetName,
+        interpreter = interpreter,
+        inputShape = inputShape,
+        outputShape = outputShape,
+        inputWidth = inputWidth,
+        inputHeight = inputHeight,
+        inputChannelsFirst = inputChannelsFirst,
+        outputChannelsFirst = outputChannelsFirst,
+        outputChannels = outputChannels,
+        outputCandidates = outputCandidates
+      )
+    } catch (error: Exception) {
+      interpreter.close()
+      throw error
     }
   }
 
@@ -196,10 +324,7 @@ internal class OnDeviceSafetyDetector(
     val bytes = try {
       context.assets.open(assetName).use { it.readBytes() }
     } catch (error: Exception) {
-      throw IllegalStateException(
-        "Missing $assetName. Run scripts/prepare-person-model.ps1 before building the app.",
-        error
-      )
+      throw IllegalStateException("Missing $assetName in the Android assets directory.", error)
     }
 
     return ByteBuffer.allocateDirect(bytes.size)
@@ -268,47 +393,51 @@ internal class OnDeviceSafetyDetector(
     }
   }
 
-  private fun prepareLetterboxedInput(source: Bitmap): PreparedInput {
+  private fun prepareLetterboxedInput(
+    source: Bitmap,
+    runtime: ModelRuntime
+  ): PreparedInput {
     val scale = min(
-      inputWidth / source.width.toFloat(),
-      inputHeight / source.height.toFloat()
+      runtime.inputWidth / source.width.toFloat(),
+      runtime.inputHeight / source.height.toFloat()
     )
     val resizedWidth = max(1, (source.width * scale).roundToInt())
     val resizedHeight = max(1, (source.height * scale).roundToInt())
-    val padX = (inputWidth - resizedWidth) / 2f
-    val padY = (inputHeight - resizedHeight) / 2f
+    val padX = (runtime.inputWidth - resizedWidth) / 2f
+    val padY = (runtime.inputHeight - resizedHeight) / 2f
 
-    val modelBitmap = Bitmap.createBitmap(inputWidth, inputHeight, Bitmap.Config.ARGB_8888)
+    val modelBitmap = Bitmap.createBitmap(
+      runtime.inputWidth,
+      runtime.inputHeight,
+      Bitmap.Config.ARGB_8888
+    )
     val canvas = Canvas(modelBitmap)
-    canvas.drawColor(Color.BLACK)
+    canvas.drawColor(Color.rgb(114, 114, 114))
     val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     val resized = Bitmap.createScaledBitmap(source, resizedWidth, resizedHeight, true)
     canvas.drawBitmap(resized, floor(padX), floor(padY), paint)
     if (resized !== source) resized.recycle()
 
-    val pixels = IntArray(inputWidth * inputHeight)
-    modelBitmap.getPixels(pixels, 0, inputWidth, 0, 0, inputWidth, inputHeight)
+    val pixels = IntArray(runtime.inputWidth * runtime.inputHeight)
+    modelBitmap.getPixels(
+      pixels,
+      0,
+      runtime.inputWidth,
+      0,
+      0,
+      runtime.inputWidth,
+      runtime.inputHeight
+    )
     modelBitmap.recycle()
 
     val buffer = ByteBuffer.allocateDirect(pixels.size * 3 * 4)
       .order(ByteOrder.nativeOrder())
 
-  if (inputChannelsFirst) {
-    // NCHW: all red values, followed by all green values,
-    // followed by all blue values.
-    for (pixel in pixels) {
-      buffer.putFloat(Color.red(pixel) / 255f)
-    }
-
-    for (pixel in pixels) {
-      buffer.putFloat(Color.green(pixel) / 255f)
-    }
-
-    for (pixel in pixels) {
-      buffer.putFloat(Color.blue(pixel) / 255f)
-    }
+    if (runtime.inputChannelsFirst) {
+      for (pixel in pixels) buffer.putFloat(Color.red(pixel) / 255f)
+      for (pixel in pixels) buffer.putFloat(Color.green(pixel) / 255f)
+      for (pixel in pixels) buffer.putFloat(Color.blue(pixel) / 255f)
     } else {
-      // NHWC: RGB values are interleaved for each pixel.
       for (pixel in pixels) {
         buffer.putFloat(Color.red(pixel) / 255f)
         buffer.putFloat(Color.green(pixel) / 255f)
@@ -327,74 +456,70 @@ internal class OnDeviceSafetyDetector(
     )
   }
 
-  private fun runPersonInference(
-    activeInterpreter: Interpreter,
+  private fun runFloatModel(
+    runtime: ModelRuntime,
     prepared: PreparedInput
-  ): List<PersonDetection> {
-    val elementCount = outputShape.fold(1) { total, value -> total * value }
+  ): FloatArray {
+    val elementCount = runtime.outputShape.fold(1) { total, value -> total * value }
     val outputBuffer = ByteBuffer.allocateDirect(elementCount * 4)
       .order(ByteOrder.nativeOrder())
 
-    activeInterpreter.run(prepared.buffer, outputBuffer)
+    runtime.interpreter.run(prepared.buffer, outputBuffer)
     outputBuffer.rewind()
 
-    val values = FloatArray(elementCount)
-    outputBuffer.asFloatBuffer().get(values)
-
-    return parseYoloOutput(values, prepared)
+    return FloatArray(elementCount).also { values ->
+      outputBuffer.asFloatBuffer().get(values)
+    }
   }
 
-  private fun parseYoloOutput(
+  private fun parseLifeJacketOutput(
+    runtime: ModelRuntime,
     values: FloatArray,
     prepared: PreparedInput
-  ): List<PersonDetection> {
-    val dimA = outputShape[1]
-    val dimB = outputShape[2]
-    val channelsFirst = dimA <= 512 && dimB > dimA
-    val channels = if (channelsFirst) dimA else dimB
-    val candidates = if (channelsFirst) dimB else dimA
-
-    require(channels >= 5) {
-      "Unsupported YOLO output ${outputShape.contentToString()}: fewer than five channels."
+  ): List<ClassDetection> {
+    require(runtime.outputChannels == 6) {
+      "Unsupported ${runtime.assetName} output ${runtime.outputShape.contentToString()}; expected 6 channels for notwear/wear."
     }
 
-    fun value(candidate: Int, channel: Int): Float {
-      return if (channelsFirst) {
-        values[channel * candidates + candidate]
-      } else {
-        values[candidate * channels + channel]
-      }
+    fun value(candidate: Int, channel: Int): Float = if (runtime.outputChannelsFirst) {
+      values[channel * runtime.outputCandidates + candidate]
+    } else {
+      values[candidate * runtime.outputChannels + channel]
     }
 
-    val raw = ArrayList<PersonDetection>()
+    val appearsPostNms = runtime.outputCandidates <= 500
+    val raw = ArrayList<ClassDetection>()
 
-    for (candidate in 0 until candidates) {
+    for (candidate in 0 until runtime.outputCandidates) {
+      val classId: Int
+      val score: Float
       val inputLeft: Float
       val inputTop: Float
       val inputRight: Float
       val inputBottom: Float
-      val score: Float
 
-      if (channels == 6) {
-        // Optional post-NMS format: x1, y1, x2, y2, score, class.
-        val classId = value(candidate, 5).roundToInt()
-        if (classId != 0) continue
+      if (appearsPostNms) {
+        classId = value(candidate, 5).roundToInt()
+        if (classId != NOT_WEAR_CLASS_ID && classId != WEAR_CLASS_ID) continue
+
         score = value(candidate, 4)
-        if (score < PERSON_CONFIDENCE) continue
+        if (!score.isFinite() || score < CANDIDATE_CONFIDENCE) continue
 
-        inputLeft = scaleCoordinate(value(candidate, 0), inputWidth)
-        inputTop = scaleCoordinate(value(candidate, 1), inputHeight)
-        inputRight = scaleCoordinate(value(candidate, 2), inputWidth)
-        inputBottom = scaleCoordinate(value(candidate, 3), inputHeight)
+        inputLeft = scaleCoordinate(value(candidate, 0), runtime.inputWidth)
+        inputTop = scaleCoordinate(value(candidate, 1), runtime.inputHeight)
+        inputRight = scaleCoordinate(value(candidate, 2), runtime.inputWidth)
+        inputBottom = scaleCoordinate(value(candidate, 3), runtime.inputHeight)
       } else {
-        // Ultralytics YOLO11 raw format: cx, cy, width, height, class scores.
-        score = value(candidate, 4) // COCO class 0 = person
-        if (score < PERSON_CONFIDENCE) continue
+        val notWearScore = value(candidate, 4)
+        val wearScore = value(candidate, 5)
+        classId = if (wearScore > notWearScore) WEAR_CLASS_ID else NOT_WEAR_CLASS_ID
+        score = max(notWearScore, wearScore)
+        if (!score.isFinite() || score < CANDIDATE_CONFIDENCE) continue
 
-        val centerX = scaleCoordinate(value(candidate, 0), inputWidth)
-        val centerY = scaleCoordinate(value(candidate, 1), inputHeight)
-        val width = scaleCoordinate(value(candidate, 2), inputWidth)
-        val height = scaleCoordinate(value(candidate, 3), inputHeight)
+        val centerX = scaleCoordinate(value(candidate, 0), runtime.inputWidth)
+        val centerY = scaleCoordinate(value(candidate, 1), runtime.inputHeight)
+        val width = scaleCoordinate(value(candidate, 2), runtime.inputWidth)
+        val height = scaleCoordinate(value(candidate, 3), runtime.inputHeight)
 
         inputLeft = centerX - width / 2f
         inputTop = centerY - height / 2f
@@ -402,25 +527,141 @@ internal class OnDeviceSafetyDetector(
         inputBottom = centerY + height / 2f
       }
 
-      var left = (inputLeft - prepared.padX) / prepared.scale
-      var top = (inputTop - prepared.padY) / prepared.scale
-      var right = (inputRight - prepared.padX) / prepared.scale
-      var bottom = (inputBottom - prepared.padY) / prepared.scale
+      val box = mapBoxToSource(
+        inputLeft,
+        inputTop,
+        inputRight,
+        inputBottom,
+        prepared
+      ) ?: continue
 
-      left = left.coerceIn(0f, prepared.sourceWidth - 1f)
-      top = top.coerceIn(0f, prepared.sourceHeight - 1f)
-      right = right.coerceIn(left + 1f, prepared.sourceWidth.toFloat())
-      bottom = bottom.coerceIn(top + 1f, prepared.sourceHeight.toFloat())
-
-      val areaPercent = ((right - left) * (bottom - top) /
-        (prepared.sourceWidth * prepared.sourceHeight).toFloat()) * 100f
-      if (areaPercent < MIN_PERSON_AREA_PERCENT) continue
-
-      raw.add(PersonDetection(left, top, right, bottom, score))
+      raw.add(
+        ClassDetection(
+          left = box.left,
+          top = box.top,
+          right = box.right,
+          bottom = box.bottom,
+          score = score,
+          classId = classId
+        )
+      )
     }
 
-    val selected = nonMaximumSuppression(raw, PERSON_IOU, MAX_PEOPLE)
-    return selected.map { expandBox(it, prepared.sourceWidth, prepared.sourceHeight) }
+    return nonMaximumSuppression(raw, NMS_IOU, MAX_PEOPLE)
+      .map { expandBox(it, prepared.sourceWidth, prepared.sourceHeight) }
+  }
+
+  private fun parsePersonOutput(
+    runtime: ModelRuntime,
+    values: FloatArray,
+    prepared: PreparedInput
+  ): List<ClassDetection> {
+    fun value(candidate: Int, channel: Int): Float = if (runtime.outputChannelsFirst) {
+      values[channel * runtime.outputCandidates + candidate]
+    } else {
+      values[candidate * runtime.outputChannels + channel]
+    }
+
+    val appearsPostNms = runtime.outputChannels == 6 && runtime.outputCandidates <= 500
+    val raw = ArrayList<ClassDetection>()
+
+    for (candidate in 0 until runtime.outputCandidates) {
+      val score: Float
+      val inputLeft: Float
+      val inputTop: Float
+      val inputRight: Float
+      val inputBottom: Float
+
+      if (appearsPostNms) {
+        val classId = value(candidate, 5).roundToInt()
+        if (classId != 0) continue
+
+        score = value(candidate, 4)
+        if (!score.isFinite() || score < PERSON_CONFIDENCE) continue
+
+        inputLeft = scaleCoordinate(value(candidate, 0), runtime.inputWidth)
+        inputTop = scaleCoordinate(value(candidate, 1), runtime.inputHeight)
+        inputRight = scaleCoordinate(value(candidate, 2), runtime.inputWidth)
+        inputBottom = scaleCoordinate(value(candidate, 3), runtime.inputHeight)
+      } else {
+        score = value(candidate, 4)
+        if (!score.isFinite() || score < PERSON_CONFIDENCE) continue
+
+        val centerX = scaleCoordinate(value(candidate, 0), runtime.inputWidth)
+        val centerY = scaleCoordinate(value(candidate, 1), runtime.inputHeight)
+        val width = scaleCoordinate(value(candidate, 2), runtime.inputWidth)
+        val height = scaleCoordinate(value(candidate, 3), runtime.inputHeight)
+
+        inputLeft = centerX - width / 2f
+        inputTop = centerY - height / 2f
+        inputRight = centerX + width / 2f
+        inputBottom = centerY + height / 2f
+      }
+
+      val box = mapBoxToSource(
+        inputLeft,
+        inputTop,
+        inputRight,
+        inputBottom,
+        prepared
+      ) ?: continue
+
+      raw.add(
+        ClassDetection(
+          left = box.left,
+          top = box.top,
+          right = box.right,
+          bottom = box.bottom,
+          score = score,
+          classId = 0
+        )
+      )
+    }
+
+    return nonMaximumSuppression(raw, NMS_IOU, MAX_PEOPLE)
+      .map { expandBox(it, prepared.sourceWidth, prepared.sourceHeight) }
+  }
+
+  private fun mapBoxToSource(
+    inputLeft: Float,
+    inputTop: Float,
+    inputRight: Float,
+    inputBottom: Float,
+    prepared: PreparedInput
+  ): ClassDetection? {
+    if (
+      !inputLeft.isFinite() ||
+      !inputTop.isFinite() ||
+      !inputRight.isFinite() ||
+      !inputBottom.isFinite()
+    ) return null
+
+    var left = (inputLeft - prepared.padX) / prepared.scale
+    var top = (inputTop - prepared.padY) / prepared.scale
+    var right = (inputRight - prepared.padX) / prepared.scale
+    var bottom = (inputBottom - prepared.padY) / prepared.scale
+
+    if (right < left) {
+      val swap = left
+      left = right
+      right = swap
+    }
+    if (bottom < top) {
+      val swap = top
+      top = bottom
+      bottom = swap
+    }
+
+    left = left.coerceIn(0f, prepared.sourceWidth - 1f)
+    top = top.coerceIn(0f, prepared.sourceHeight - 1f)
+    right = right.coerceIn(left + 1f, prepared.sourceWidth.toFloat())
+    bottom = bottom.coerceIn(top + 1f, prepared.sourceHeight.toFloat())
+
+    val areaPercent = ((right - left) * (bottom - top) /
+      (prepared.sourceWidth * prepared.sourceHeight).toFloat()) * 100f
+    if (areaPercent < MIN_BOX_AREA_PERCENT) return null
+
+    return ClassDetection(left, top, right, bottom, 0f, -1)
   }
 
   private fun scaleCoordinate(value: Float, dimension: Int): Float {
@@ -428,12 +669,12 @@ internal class OnDeviceSafetyDetector(
   }
 
   private fun nonMaximumSuppression(
-    boxes: List<PersonDetection>,
+    boxes: List<ClassDetection>,
     iouThreshold: Float,
     limit: Int
-  ): List<PersonDetection> {
+  ): List<ClassDetection> {
     val sorted = boxes.sortedByDescending { it.score }
-    val selected = ArrayList<PersonDetection>()
+    val selected = ArrayList<ClassDetection>()
 
     for (candidate in sorted) {
       if (selected.any { intersectionOverUnion(candidate, it) > iouThreshold }) continue
@@ -443,7 +684,7 @@ internal class OnDeviceSafetyDetector(
     return selected
   }
 
-  private fun intersectionOverUnion(a: PersonDetection, b: PersonDetection): Float {
+  private fun intersectionOverUnion(a: ClassDetection, b: ClassDetection): Float {
     val overlapLeft = max(a.left, b.left)
     val overlapTop = max(a.top, b.top)
     val overlapRight = min(a.right, b.right)
@@ -456,112 +697,42 @@ internal class OnDeviceSafetyDetector(
   }
 
   private fun expandBox(
-    box: PersonDetection,
+    box: ClassDetection,
     imageWidth: Int,
     imageHeight: Int
-  ): PersonDetection {
-    val padX = box.width * PERSON_BOX_PADDING
-    val padY = box.height * PERSON_BOX_PADDING
-    return PersonDetection(
+  ): ClassDetection {
+    val padX = box.width * BOX_PADDING
+    val padY = box.height * BOX_PADDING
+    return box.copy(
       left = (box.left - padX).coerceAtLeast(0f),
       top = (box.top - padY).coerceAtLeast(0f),
       right = (box.right + padX).coerceAtMost(imageWidth.toFloat()),
-      bottom = (box.bottom + padY).coerceAtMost(imageHeight.toFloat()),
-      score = box.score
+      bottom = (box.bottom + padY).coerceAtMost(imageHeight.toFloat())
     )
   }
 
-  private fun analyseSafetyColours(
-    bitmap: Bitmap,
-    person: PersonDetection,
-    sensitivity: Float
-  ): HsvResult {
-    val torsoLeft = (person.left + person.width * 0.10f).roundToInt()
-      .coerceIn(0, bitmap.width - 1)
-    val torsoRight = (person.left + person.width * 0.90f).roundToInt()
-      .coerceIn(torsoLeft + 1, bitmap.width)
-    val torsoTop = (person.top + person.height * 0.08f).roundToInt()
-      .coerceIn(0, bitmap.height - 1)
-    val torsoBottom = (person.top + person.height * 0.72f).roundToInt()
-      .coerceIn(torsoTop + 1, bitmap.height)
+  private fun ClassDetection.toBoxMap(
+    sourceWidth: Int,
+    sourceHeight: Int,
+    decision: String,
+    className: String,
+    confidence: Float
+  ): Map<String, Any> = mapOf(
+    "x" to round4(left / sourceWidth.toFloat()),
+    "y" to round4(top / sourceHeight.toFloat()),
+    "w" to round4(width / sourceWidth.toFloat()),
+    "h" to round4(height / sourceHeight.toFloat()),
+    "decision" to decision,
+    "class_name" to className,
+    "compliant" to (decision == "wear"),
+    "confidence" to round1(confidence * 100f),
+    "coverage" to round1(confidence * 100f)
+  )
 
-    val torsoWidth = torsoRight - torsoLeft
-    val torsoHeight = torsoBottom - torsoTop
-    val maxSamples = 24_000f
-    val sampleScale = min(1f, sqrt(maxSamples / (torsoWidth * torsoHeight).toFloat()))
-    val sampledWidth = max(1, ceil(torsoWidth * sampleScale).toInt())
-    val sampledHeight = max(1, ceil(torsoHeight * sampleScale).toInt())
-
-    val torso = Bitmap.createBitmap(bitmap, torsoLeft, torsoTop, torsoWidth, torsoHeight)
-    val sampled = if (sampledWidth != torsoWidth || sampledHeight != torsoHeight) {
-      Bitmap.createScaledBitmap(torso, sampledWidth, sampledHeight, true)
-    } else {
-      torso
-    }
-
-    val pixels = IntArray(sampledWidth * sampledHeight)
-    sampled.getPixels(pixels, 0, sampledWidth, 0, 0, sampledWidth, sampledHeight)
-
-    if (sampled !== torso) sampled.recycle()
-    torso.recycle()
-
-    var yellow = 0
-    var orange = 0
-    var green = 0
-    var red = 0
-    var marineYellow = 0
-    var safetyPixels = 0
-    val hsv = FloatArray(3)
-
-    for (pixel in pixels) {
-      Color.RGBToHSV(Color.red(pixel), Color.green(pixel), Color.blue(pixel), hsv)
-      val hue = hsv[0] // Android: 0..360; OpenCV's original thresholds were doubled.
-      val saturation = hsv[1]
-      val value = hsv[2]
-
-      val vivid = saturation >= (70f / 255f) && value >= (60f / 255f)
-      if (!vivid) continue
-
-      val isYellow = hue in 44f..110f && saturation >= (80f / 255f)
-      val isOrange = hue in 12f..48f && saturation >= (100f / 255f)
-      val isGreen = hue in 110f..170f && saturation >= (90f / 255f)
-      val isRed = (hue <= 16f || hue >= 330f) &&
-        saturation >= (115f / 255f) && value >= (75f / 255f)
-      val isMarineYellow = hue in 40f..100f &&
-        saturation >= (110f / 255f) && value >= (90f / 255f)
-
-      if (isYellow) yellow++
-      if (isOrange) orange++
-      if (isGreen) green++
-      if (isRed) red++
-      if (isMarineYellow) marineYellow++
-      if (isYellow || isOrange || isGreen || isRed || isMarineYellow) safetyPixels++
-    }
-
-    val coverage = if (pixels.isEmpty()) 0f else safetyPixels * 100f / pixels.size.toFloat()
-    val counts = listOf(
-      "hi-vis yellow" to yellow,
-      "hi-vis orange" to orange,
-      "safety green" to green,
-      "rescue red" to red,
-      "marine yellow" to marineYellow
-    )
-    val dominant = counts.maxByOrNull { it.second }
-      ?.takeIf { it.second > 0 }
-      ?.first ?: "none"
-    val passed = coverage >= sensitivity
-    val confidence = if (passed) {
-      (55 + (coverage * 2f).toInt()).coerceIn(55, 90)
-    } else {
-      (50 + ((sensitivity - coverage).coerceAtLeast(0f) * 3f).toInt()).coerceIn(45, 90)
-    }
-
-    return HsvResult(
-      passed = passed,
-      coverage = coverage,
-      vestType = if (passed) dominant else "none",
-      confidence = confidence
-    )
+  private fun className(classId: Int): String = when (classId) {
+    WEAR_CLASS_ID -> "wear"
+    NOT_WEAR_CLASS_ID -> "notwear"
+    else -> "unknown"
   }
 
   private fun isNearlyBlank(bitmap: Bitmap): Boolean {
@@ -600,14 +771,41 @@ internal class OnDeviceSafetyDetector(
   ): Map<String, Any> = mapOf(
     "verdict" to "NO_PERSON",
     "reason" to reason,
-    "confidence" to 80,
+    "confidence" to 0,
     "coverage" to 0.0,
+    "compliance_rate" to 0.0,
     "vest_type" to "none",
     "people" to 0,
+    "wearing" to 0,
+    "not_wearing" to 0,
+    "uncertain" to 0,
     "boxes" to emptyList<Map<String, Any>>(),
     "detection_method" to method,
     "duration_ms" to durationMs,
-    "disclaimer" to "No safety decision was made."
+    "disclaimer" to "No life-jacket decision was made."
+  )
+
+  private fun manualResult(
+    reason: String,
+    people: Int,
+    boxes: List<Map<String, Any>>,
+    confidence: Int,
+    durationMs: Long
+  ): Map<String, Any> = mapOf(
+    "verdict" to "MANUAL_CHECK_REQUIRED",
+    "reason" to reason,
+    "confidence" to confidence,
+    "coverage" to 0.0,
+    "compliance_rate" to 0.0,
+    "vest_type" to "uncertain",
+    "people" to people,
+    "wearing" to 0,
+    "not_wearing" to 0,
+    "uncertain" to people,
+    "boxes" to boxes,
+    "detection_method" to "on-device-yolo-wear-notwear",
+    "duration_ms" to durationMs,
+    "disclaimer" to "The model was not confident enough for an automatic decision."
   )
 
   private fun errorResult(message: String, durationMs: Long): Map<String, Any> = mapOf(
@@ -615,12 +813,18 @@ internal class OnDeviceSafetyDetector(
     "reason" to message,
     "confidence" to 0,
     "coverage" to 0.0,
+    "compliance_rate" to 0.0,
     "vest_type" to "none",
     "people" to 0,
+    "wearing" to 0,
+    "not_wearing" to 0,
+    "uncertain" to 0,
     "boxes" to emptyList<Map<String, Any>>(),
     "detection_method" to "error",
     "duration_ms" to durationMs
   )
+
+  private fun percentage(value: Float): Int = (value * 100f).roundToInt()
 
   private fun elapsedMs(startedAt: Long): Long =
     (System.nanoTime() - startedAt) / 1_000_000L
@@ -632,10 +836,25 @@ internal class OnDeviceSafetyDetector(
     kotlin.math.round(value * 10_000.0) / 10_000.0
 
   override fun close() {
-    interpreter?.close()
-    interpreter = null
+    lifeJacketRuntime?.interpreter?.close()
+    personRuntime?.interpreter?.close()
+    lifeJacketRuntime = null
+    personRuntime = null
   }
 }
+
+private data class ModelRuntime(
+  val assetName: String,
+  val interpreter: Interpreter,
+  val inputShape: IntArray,
+  val outputShape: IntArray,
+  val inputWidth: Int,
+  val inputHeight: Int,
+  val inputChannelsFirst: Boolean,
+  val outputChannelsFirst: Boolean,
+  val outputChannels: Int,
+  val outputCandidates: Int
+)
 
 private data class PreparedInput(
   val buffer: ByteBuffer,
@@ -646,25 +865,19 @@ private data class PreparedInput(
   val sourceHeight: Int
 )
 
-private data class PersonDetection(
+private data class ClassDetection(
   val left: Float,
   val top: Float,
   val right: Float,
   val bottom: Float,
-  val score: Float
+  val score: Float,
+  val classId: Int
 ) {
   val width: Float get() = right - left
   val height: Float get() = bottom - top
 }
 
-private data class HsvResult(
-  val passed: Boolean,
-  val coverage: Float,
-  val vestType: String,
-  val confidence: Int
-)
-
-private data class PersonColourResult(
-  val detection: PersonDetection,
-  val hsv: HsvResult
+private data class EvaluatedDetection(
+  val detection: ClassDetection,
+  val decision: String
 )

@@ -19,7 +19,7 @@ class AGScanInferenceModule : Module() {
       return@AsyncFunction engine.initialize()
     }
 
-    AsyncFunction("scan") { imageUri: String, sensitivity: Double, deleteAfterScan: Boolean ->
+    AsyncFunction("scan") { imageUri: String, confidenceThreshold: Double, deleteAfterScan: Boolean ->
       val context = appContext.reactContext?.applicationContext
         ?: throw IllegalStateException("Android application context is unavailable.")
 
@@ -29,7 +29,7 @@ class AGScanInferenceModule : Module() {
       }
 
       try {
-        return@AsyncFunction engine.scan(imageUri, sensitivity.toFloat())
+        return@AsyncFunction engine.scan(imageUri, confidenceThreshold.toFloat())
       } finally {
         if (deleteAfterScan) {
           deleteTemporaryCameraFile(context.cacheDir, context.externalCacheDir, imageUri)
@@ -40,7 +40,7 @@ class AGScanInferenceModule : Module() {
     Function("getStatus") {
       return@Function detector?.status() ?: mapOf(
         "ready" to false,
-        "mode" to "on-device-yolo+hsv",
+        "mode" to "on-device-yolo-wear-notwear",
         "message" to "Detector has not been initialized."
       )
     }
@@ -69,11 +69,9 @@ class AGScanInferenceModule : Module() {
       val isCacheFile = canonicalPath.startsWith(internalCache) ||
         (externalCache != null && canonicalPath.startsWith(externalCache))
 
-      if (isCacheFile && file.exists()) {
-        file.delete()
-      }
+      if (isCacheFile && file.exists()) file.delete()
     } catch (_: Exception) {
-      // Cache cleanup must never fail a completed scan.
+      // A temporary camera file that cannot be removed must not fail the scan.
     }
   }
 }

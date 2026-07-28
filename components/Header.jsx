@@ -11,7 +11,7 @@ export default function Header({ modelReady }) {
         </View>
         <View>
           <Text style={styles.logoText}>AG SCAN</Text>
-          <Text style={styles.logoSub}>OFFLINE SAFETY COLOUR SCANNER</Text>
+          <Text style={styles.logoSub}>OFFLINE LIFE JACKET SCANNER</Text>
         </View>
       </View>
 

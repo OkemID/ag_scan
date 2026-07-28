@@ -25,12 +25,12 @@ export function useScanner() {
   const [modelReady, setModelReady] = useState(false);
   const [modelStatus, setModelStatus] = useState({
     ready: false,
-    mode: 'on-device-yolo+hsv',
-    message: 'Loading the on-device person model…',
+    mode: 'on-device-yolo-wear-notwear',
+    message: 'Loading the on-device life-jacket model…',
   });
   const [history, setHistory] = useState([]);
   const [facing, setFacing] = useState('back');
-  const [sensitivity, setSensitivity] = useState(12);
+  const [decisionThreshold, setDecisionThreshold] = useState(60);
 
   useEffect(() => {
     let mounted = true;
@@ -45,7 +45,7 @@ export function useScanner() {
         if (!mounted) return;
         setModelStatus({
           ready: false,
-          mode: 'on-device-yolo+hsv',
+          mode: 'on-device-yolo-wear-notwear',
           message: error?.message || 'Could not load the on-device AI model.',
         });
         setModelReady(false);
@@ -68,10 +68,12 @@ export function useScanner() {
       {
         verdict: result.verdict,
         time: new Date(),
-        coverage: result.coverage,
-        vestType: result.vest_type,
-        detectionMethod: result.detection_method,
+        confidence: result.confidence,
         people: result.people,
+        wearing: result.wearing,
+        notWearing: result.not_wearing,
+        uncertain: result.uncertain,
+        detectionMethod: result.detection_method,
         durationMs: result.duration_ms,
       },
       ...previous,
@@ -94,15 +96,19 @@ export function useScanner() {
         skipProcessing: false,
       });
 
-      result = await scanImageOnDevice(photo.uri, sensitivity);
+      result = await scanImageOnDevice(photo.uri, decisionThreshold);
     } catch (error) {
       result = {
         verdict: 'UNKNOWN',
         reason: `Scan error: ${error?.message || 'Unknown error'}`,
         confidence: 0,
         coverage: 0,
+        compliance_rate: 0,
         vest_type: 'none',
         people: 0,
+        wearing: 0,
+        not_wearing: 0,
+        uncertain: 0,
         boxes: [],
         detection_method: 'error',
         duration_ms: 0,
@@ -116,16 +122,19 @@ export function useScanner() {
     setLastResult(result);
     addToHistory(result);
 
-    if (result.verdict === 'COLOUR_CHECK_PASSED') {
+    if (result.verdict === 'LIFE_JACKET_CHECK_PASSED') {
       setIsSpeaking(true);
       await playCompliantAlert();
       setIsSpeaking(false);
-    } else if (result.verdict === 'MANUAL_CHECK_REQUIRED') {
+    } else if (
+      result.verdict === 'LIFE_JACKET_MISSING' ||
+      result.verdict === 'MANUAL_CHECK_REQUIRED'
+    ) {
       setIsSpeaking(true);
       await playNonCompliantAlert();
       setIsSpeaking(false);
     }
-  }, [addToHistory, modelReady, sensitivity]);
+  }, [addToHistory, decisionThreshold, modelReady]);
 
   const startLiveScan = useCallback(async () => {
     if (liveScanActive.current || !cameraRef.current || !modelReady) return;
@@ -169,7 +178,7 @@ export function useScanner() {
     history,
     modelReady,
     modelStatus,
-    sensitivity,
-    setSensitivity,
+    decisionThreshold,
+    setDecisionThreshold,
   };
 }

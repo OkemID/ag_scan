@@ -42,8 +42,8 @@ function InnerApp() {
     history,
     modelReady,
     modelStatus,
-    sensitivity,
-    setSensitivity,
+    decisionThreshold,
+    setDecisionThreshold,
   } = useScanner();
 
   useEffect(() => {
@@ -62,8 +62,8 @@ function InnerApp() {
           <Text style={styles.permIcon}>📷</Text>
           <Text style={styles.permTitle}>Camera Access Needed</Text>
           <Text style={styles.permBody}>
-            AG Scan uses the camera to detect people and check recognised safety
-            colours. Images are analysed on this phone and are not uploaded.
+            AG Scan uses the camera to classify whether each visible person is wearing
+            a life jacket. Images are analysed on this phone and are not uploaded.
           </Text>
           <Pressable style={styles.permBtn} onPress={requestPermission}>
             <Text style={styles.permBtnText}>Allow Camera</Text>
@@ -114,8 +114,8 @@ function InnerApp() {
         <View style={styles.offlineCard}>
           <Text style={styles.offlineTitle}>OFFLINE MODE</Text>
           <Text style={styles.offlineBody}>
-            Person detection and colour analysis run entirely on this device.
-            No backend, Wi-Fi or mobile data is required.
+            Wear/not-wear detection runs entirely on this device. No backend, Wi-Fi
+            or mobile data is required.
           </Text>
         </View>
 
@@ -134,27 +134,27 @@ function InnerApp() {
 
         <View style={styles.sliderCard}>
           <View style={styles.sliderHeader}>
-            <Text style={styles.sliderLabel}>COLOUR THRESHOLD</Text>
-            <Text style={styles.sliderValue}>{sensitivity.toFixed(0)}%</Text>
+            <Text style={styles.sliderLabel}>DECISION CONFIDENCE</Text>
+            <Text style={styles.sliderValue}>{decisionThreshold.toFixed(0)}%</Text>
           </View>
           <Text style={styles.sliderSub}>
-            Minimum recognised safety-colour coverage in each detected torso.
+            Minimum model confidence required for an automatic wear/not-wear decision.
           </Text>
           <Slider
             style={styles.slider}
-            minimumValue={3}
-            maximumValue={25}
-            step={1}
-            value={sensitivity}
-            onValueChange={setSensitivity}
+            minimumValue={35}
+            maximumValue={85}
+            step={5}
+            value={decisionThreshold}
+            onValueChange={setDecisionThreshold}
             minimumTrackTintColor={COLORS.yellow}
             maximumTrackTintColor={COLORS.surface2}
             thumbTintColor={COLORS.yellow}
           />
           <View style={styles.sliderTicks}>
-            <Text style={styles.sliderTick}>3%</Text>
-            <Text style={styles.sliderTick}>14%</Text>
-            <Text style={styles.sliderTick}>25%</Text>
+            <Text style={styles.sliderTick}>35%</Text>
+            <Text style={styles.sliderTick}>60%</Text>
+            <Text style={styles.sliderTick}>85%</Text>
           </View>
         </View>
 
@@ -164,8 +164,8 @@ function InnerApp() {
         <View style={styles.disclaimerCard}>
           <Text style={styles.disclaimerTitle}>IMPORTANT</Text>
           <Text style={styles.disclaimerText}>
-            This first release checks safety colours; it does not confirm that an
-            item is a certified life jacket. Always perform a physical inspection.
+            The model checks visible wear/not-wear patterns. It cannot verify certification,
+            buoyancy, fastening, fit or physical condition. Always inspect physically.
           </Text>
         </View>
       </ScrollView>

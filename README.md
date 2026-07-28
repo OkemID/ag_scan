@@ -1,6 +1,6 @@
-# AG Scan Offline Android V1
+# AG Scan Offline
 
-This project is the server-free Android conversion of AG Scan.
+Android-only Expo/React Native life-jacket scanner using an on-device YOLO11
+`wear`/`notwear` LiteRT model.
 
-Start with **README_OFFLINE_ANDROID.md**. It covers model export, native Android
-building, direct APK installation, airplane-mode testing, and Play Store AAB builds.
+See `README_OFFLINE_ANDROID.md` for verification, build and test instructions.

@@ -4,13 +4,13 @@ export async function initializeDetector() {
   return AGScanInference.initialize();
 }
 
-export async function scanImageOnDevice(imageUri, sensitivity = 12) {
+export async function scanImageOnDevice(imageUri, confidenceThreshold = 60) {
   if (!imageUri) {
     throw new Error('The camera did not return an image URI.');
   }
 
   // The native module deletes temporary camera files after decoding them.
-  return AGScanInference.scan(imageUri, Number(sensitivity), true);
+  return AGScanInference.scan(imageUri, Number(confidenceThreshold), true);
 }
 
 export function getDetectorStatus() {

@@ -2,25 +2,33 @@
   "expo": {
     "name": "AG Scan Offline",
     "slug": "ag-scan-offline",
-    "version": "1.0.2",
+    "version": "1.1.0",
     "orientation": "portrait",
-    "platforms": ["android"],
+    "platforms": [
+      "android"
+    ],
     "userInterfaceStyle": "dark",
-    "assetBundlePatterns": ["**/*"],
+    "assetBundlePatterns": [
+      "**/*"
+    ],
     "updates": {
       "enabled": false
     },
     "android": {
       "package": "com.okem.agscan",
-      "versionCode": 1,
-      "permissions": ["CAMERA"],
-      "blockedPermissions": ["android.permission.RECORD_AUDIO"]
+      "versionCode": 2,
+      "permissions": [
+        "CAMERA"
+      ],
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "plugins": [
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow AG Scan to use the camera for on-device person and safety-colour detection.",
+          "cameraPermission": "Allow AG Scan to use the camera for on-device life-jacket wear detection.",
           "recordAudioAndroid": false
         }
       ],

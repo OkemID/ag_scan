@@ -2,7 +2,7 @@ const fs = require('fs');
 const path = require('path');
 
 const root = path.resolve(__dirname, '..');
-const model = path.join(
+const assetsDir = path.join(
   root,
   'modules',
   'ag-scan-inference',
@@ -10,8 +10,20 @@ const model = path.join(
   'src',
   'main',
   'assets',
-  'person.tflite',
 );
+
+const models = [
+  {
+    name: 'life_jacket.tflite',
+    required: true,
+    purpose: 'wear/not-wear detector',
+  },
+  {
+    name: 'person.tflite',
+    required: false,
+    purpose: 'no-person fallback',
+  },
+];
 
 const sourceFiles = [
   path.join(root, 'App.jsx'),
@@ -21,12 +33,19 @@ const sourceFiles = [
 
 let failed = false;
 
-if (!fs.existsSync(model)) {
-  console.error('✗ Missing person.tflite. Run scripts/prepare-person-model.ps1');
-  failed = true;
-} else {
-  const sizeMb = fs.statSync(model).size / (1024 * 1024);
-  console.log(`✓ person.tflite found (${sizeMb.toFixed(2)} MB)`);
+for (const model of models) {
+  const modelPath = path.join(assetsDir, model.name);
+  if (!fs.existsSync(modelPath)) {
+    const marker = model.required ? '✗' : '⚠';
+    console[model.required ? 'error' : 'warn'](
+      `${marker} Missing ${model.name} (${model.purpose})`,
+    );
+    if (model.required) failed = true;
+    continue;
+  }
+
+  const sizeMb = fs.statSync(modelPath).size / (1024 * 1024);
+  console.log(`✓ ${model.name} found (${sizeMb.toFixed(2)} MB) — ${model.purpose}`);
 }
 
 for (const file of sourceFiles) {
@@ -37,9 +56,34 @@ for (const file of sourceFiles) {
   }
 }
 
+const detectorPath = path.join(
+  root,
+  'modules',
+  'ag-scan-inference',
+  'android',
+  'src',
+  'main',
+  'java',
+  'expo',
+  'modules',
+  'agscaninference',
+  'OnDeviceSafetyDetector.kt',
+);
+const detectorText = fs.readFileSync(detectorPath, 'utf8');
+
+if (!detectorText.includes('life_jacket.tflite')) {
+  console.error('✗ Native detector is not configured to load life_jacket.tflite.');
+  failed = true;
+}
+if (/analyseSafetyColours|COLOUR_CHECK_PASSED/.test(detectorText)) {
+  console.error('✗ Legacy HSV verdict logic is still active.');
+  failed = true;
+}
+
 if (!failed) {
+  console.log('✓ Wear/not-wear model is the active decision path.');
   console.log('✓ No backend dependency found in the active scan path.');
-  console.log('✓ Source is ready for Android prebuild.');
+  console.log('✓ Source is ready for Android prebuild or EAS Build.');
 }
 
 process.exit(failed ? 1 : 0);
